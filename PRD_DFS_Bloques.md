@@ -9,7 +9,7 @@ Desarrollar un sistema de archivos distribuidos por bloques minimalista que perm
 A continuación se presenta el orden recomendado para desarrollar el proyecto de manera incremental y eficiente:
 
 ### Fase 1: Infraestructura Básica y Comunicación
-- [  ] 1.1 Definir interfaces y contratos de comunicación (REST y gRPC)
+- [✓] 1.1 Definir interfaces y contratos de comunicación (REST y gRPC)
 - [  ] 1.2 Implementar NameNode básico con gestión de metadatos
 - [  ] 1.3 Implementar DataNode básico con almacenamiento local
 - [  ] 1.4 Establecer comunicación NameNode-DataNode (canal de control)
@@ -47,22 +47,22 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
   - [  ] Ubicación de bloques en DataNodes
   - [  ] Estado de replicación de bloques
 
-- [  ] **API REST (Canal de Control)**
-  - [  ] Endpoint para registro de DataNodes
-  - [  ] Endpoint para operaciones de archivos (crear, listar, eliminar)
-  - [  ] Endpoint para obtener ubicación de bloques
-  - [  ] Endpoint para reportar estado de bloques
+- [✓] **API REST (Canal de Control)**
+  - [✓] Endpoint para registro de DataNodes
+  - [✓] Endpoint para operaciones de archivos (crear, listar, eliminar)
+  - [✓] Endpoint para obtener ubicación de bloques
+  - [✓] Endpoint para reportar estado de bloques
 ### DataNode
 - [  ] **Almacenamiento de Bloques**
   - [  ] Sistema de archivos local para almacenar bloques
   - [  ] Identificación única de bloques
   - [  ] Gestión de espacio disponible
 
-- [  ] **Servicio gRPC (Canal de Datos)**
-  - [  ] Servicio para recibir bloques de clientes
-  - [  ] Servicio para enviar bloques a clientes
-  - [  ] Servicio para replicación entre DataNodes
-  - [  ] Servicio para reportar estado al NameNode
+- [✓] **Servicio gRPC (Canal de Datos)**
+  - [✓] Servicio para recibir bloques de clientes
+  - [✓] Servicio para enviar bloques a clientes
+  - [✓] Servicio para replicación entre DataNodes
+  - [✓] Servicio para reportar estado al NameNode
 
 - [  ] **Mecanismo Leader-Follower**
   - [  ] Protocolo de replicación de bloques
@@ -81,25 +81,25 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
   - [  ] `mkdir`: Crear directorio
   - [  ] `rmdir`: Eliminar directorio
 
-- [  ] **Comunicación**
-  - [  ] Interacción con NameNode vía REST API
-  - [  ] Interacción con DataNodes vía gRPC
+- [✓] **Comunicación**
+  - [✓] Interacción con NameNode vía REST API
+  - [✓] Interacción con DataNodes vía gRPC
 
 ## Protocolos de Comunicación
 
 ### Canal de Control (REST API)
-- [  ] **Endpoints NameNode**
-  - [  ] `/files` - Gestión de archivos y metadatos
-  - [  ] `/blocks` - Información sobre bloques y ubicaciones
-  - [  ] `/datanodes` - Registro y estado de DataNodes
-  - [  ] `/directories` - Gestión de estructura de directorios
+- [✓] **Endpoints NameNode**
+  - [✓] `/files` - Gestión de archivos y metadatos
+  - [✓] `/blocks` - Información sobre bloques y ubicaciones
+  - [✓] `/datanodes` - Registro y estado de DataNodes
+  - [✓] `/directories` - Gestión de estructura de directorios
 
 ### Canal de Datos (gRPC)
-- [  ] **Servicios DataNode**
-  - [  ] `TransferBlock` - Transferencia de bloques entre nodos
-  - [  ] `StoreBlock` - Almacenamiento de bloques
-  - [  ] `RetrieveBlock` - Recuperación de bloques
-  - [  ] `ReplicateBlock` - Replicación de bloques
+- [✓] **Servicios DataNode**
+  - [✓] `TransferBlock` - Transferencia de bloques entre nodos
+  - [✓] `StoreBlock` - Almacenamiento de bloques
+  - [✓] `RetrieveBlock` - Recuperación de bloques
+  - [✓] `ReplicateBlock` - Replicación de bloques
 
 ## Algoritmos Clave
 
@@ -124,7 +124,7 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 
 - [  ] **Documentación**
   - [  ] Diseño detallado de arquitectura
-  - [  ] Especificación de interfaces y protocolos
+  - [✓] Especificación de interfaces y protocolos
   - [  ] Manual de usuario para CLI
   - [  ] Guía de despliegue
 
@@ -145,15 +145,15 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 
 ### Protocolos de Comunicación
 
-- [  ] **Canal de Control (REST API)**
-  - [  ] Endpoints para gestión de metadatos
-  - [  ] Comunicación Cliente-NameNode
-  - [  ] Comunicación DataNode-NameNode
+- [✓] **Canal de Control (REST API)**
+  - [✓] Endpoints para gestión de metadatos
+  - [✓] Comunicación Cliente-NameNode
+  - [✓] Comunicación DataNode-NameNode
 
-- [  ] **Canal de Datos (gRPC)**
-  - [  ] Servicios para transferencia de bloques
-  - [  ] Comunicación Cliente-DataNode
-  - [  ] Comunicación DataNode-DataNode para replicación
+- [✓] **Canal de Datos (gRPC)**
+  - [✓] Servicios para transferencia de bloques
+  - [✓] Comunicación Cliente-DataNode
+  - [✓] Comunicación DataNode-DataNode para replicación
 
 ## Requisitos Funcionales
 
@@ -228,7 +228,7 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 ### Fase 1: Diseño y Configuración
 
 - [  ] Diseño detallado de la arquitectura
-- [  ] Definición de interfaces y protocolos
+- [✓] Definición de interfaces y protocolos
 - [  ] Configuración del entorno de desarrollo
 
 ### Fase 2: Implementación de Componentes Básicos
