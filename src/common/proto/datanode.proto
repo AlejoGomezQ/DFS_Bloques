@@ -1,0 +1,76 @@
+syntax = "proto3";
+
+package datanode;
+
+// Servicio principal del DataNode para la transferencia de bloques
+service DataNodeService {
+  // Almacenar un bloque en el DataNode
+  rpc StoreBlock (stream BlockData) returns (BlockResponse);
+  
+  // Recuperar un bloque del DataNode
+  rpc RetrieveBlock (BlockRequest) returns (stream BlockData);
+  
+  // Replicar un bloque a otro DataNode (usado en el mecanismo Leader-Follower)
+  rpc ReplicateBlock (ReplicationRequest) returns (BlockResponse);
+  
+  // Transferir un bloque entre DataNodes
+  rpc TransferBlock (TransferRequest) returns (BlockResponse);
+  
+  // Verificar si un bloque existe en el DataNode
+  rpc CheckBlock (BlockRequest) returns (BlockStatus);
+  
+  // Eliminar un bloque del DataNode
+  rpc DeleteBlock (BlockRequest) returns (BlockResponse);
+}
+
+// Mensaje para solicitar un bloque
+message BlockRequest {
+  string block_id = 1;
+}
+
+// Mensaje para los datos de un bloque (usado en streaming)
+message BlockData {
+  string block_id = 1;
+  bytes data = 2;
+  uint64 offset = 3;
+  uint64 total_size = 4;
+}
+
+// Respuesta a operaciones de bloque
+message BlockResponse {
+  enum Status {
+    SUCCESS = 0;
+    ERROR = 1;
+    NOT_FOUND = 2;
+    ALREADY_EXISTS = 3;
+  }
+  Status status = 1;
+  string message = 2;
+  string block_id = 3;
+}
+
+// Estado de un bloque
+message BlockStatus {
+  bool exists = 1;
+  uint64 size = 2;
+  string checksum = 3;
+}
+
+// Solicitud de replicación de un bloque
+message ReplicationRequest {
+  string block_id = 1;
+  string target_datanode_id = 2;
+  string target_hostname = 3;
+  int32 target_port = 4;
+}
+
+// Solicitud de transferencia de un bloque
+message TransferRequest {
+  string block_id = 1;
+  string source_datanode_id = 2;
+  string source_hostname = 3;
+  int32 source_port = 4;
+  string target_datanode_id = 5;
+  string target_hostname = 6;
+  int32 target_port = 7;
+}
