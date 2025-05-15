@@ -241,10 +241,14 @@ async def create_directory(directory: FileMetadata, manager: MetadataManager = D
     if existing_dir:
         raise HTTPException(status_code=409, detail=f"Directory already exists at path: {directory.path}")
     
-    # Verificar que el directorio padre existe
-    parent_path = os.path.dirname(directory.path)
-    if parent_path and not manager.get_file_by_path(parent_path):
-        raise HTTPException(status_code=404, detail=f"Parent directory does not exist: {parent_path}")
+    # Verificar que el directorio padre existe, excepto para el directorio raíz
+    if directory.path == "/":
+        # Caso especial para el directorio raíz
+        pass
+    else:
+        parent_path = os.path.dirname(directory.path)
+        if parent_path and not manager.get_file_by_path(parent_path):
+            raise HTTPException(status_code=404, detail=f"Parent directory does not exist: {parent_path}")
     
     # Crear el directorio en el sistema
     created_dir = manager.create_file(

@@ -1,7 +1,7 @@
 import os
 import argparse
 import logging
-from service.datanode_service import serve
+from src.datanode.service.datanode_service import serve
 
 def main():
     # Configurar logging
