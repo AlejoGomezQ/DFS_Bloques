@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional
+from typing import List, Optional, Dict
 from datetime import datetime
 from enum import Enum
 
@@ -16,6 +16,18 @@ class DataNodeRegistration(BaseModel):
     port: int
     storage_capacity: int  # in bytes
     available_space: int  # in bytes
+
+
+class BlockStatusInfo(BaseModel):
+    block_id: str
+    size: int
+    checksum: str
+
+
+class HeartbeatRequest(BaseModel):
+    node_id: str
+    available_space: int  # in bytes
+    blocks: Dict[str, BlockStatusInfo] = {}
 
 
 class DataNodeInfo(BaseModel):

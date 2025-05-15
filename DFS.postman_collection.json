@@ -1,0 +1,470 @@
+{
+	"info": {
+		"_postman_id": "f8116944-e125-43ac-befb-25f339bd8673",
+		"name": "DFS",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "19950458"
+	},
+	"item": [
+		{
+			"name": "Gestión DataNodes",
+			"item": [
+				{
+					"name": "Verificación de estado",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{domain}}/health",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"health"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Gestión de DataNodes",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"hostname\": \"localhost\",\r\n  \"port\": 9000,\r\n  \"storage_capacity\": 1073741824,\r\n  \"available_space\": 1073741824\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{domain}}/datanodes/register",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"datanodes",
+								"register"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Listar DataNodes registrados",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{domain}}/datanodes",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"datanodes"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Obtener información de un DataNode específico",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{domain}}/datanodes/{{node_id}}",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"datanodes",
+								"{{node_id}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Enviar heartbeat desde un DataNode",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"available_space\": 1073741824\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{domain}}/datanodes/{{node_id}}/heartbeat",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"datanodes",
+								"{{node_id}}",
+								"heartbeat"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Gestión directorios",
+			"item": [
+				{
+					"name": "Crear el directorio raíz",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n    \"name\":\"\",\r\n    \"path\":\"\",\r\n    \"type\":\"directory\",\r\n    \"size\":0,\r\n    \"blocks\":[],\r\n    \"owner\":\"system\"\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{domain}}/directories",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"directories"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Crear un directorio",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"name\": \"test_dir\",\r\n  \"path\": \"/test_dir\",\r\n  \"type\": \"directory\",\r\n  \"size\": 0,\r\n  \"blocks\": [],\r\n  \"owner\": \"test_user\"\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{domain}}/directories",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"directories"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Listar el contenido del directorio raíz",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{domain}}/directories",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"directories"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Listar el contenido de un directorio",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{domain}}/directories/{{path}}",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"directories",
+								"{{path}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Eliminar un directorio",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{domain}}/directories/{{path}}",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"directories",
+								"{{path}}"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Gestión archivos",
+			"item": [
+				{
+					"name": "Crear un archivo",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\r\n  \"name\": \"test_file.txt\",\r\n  \"path\": \"/test_dir/test_file.txt\",\r\n  \"type\": \"FILE\",\r\n  \"size\": 0,\r\n  \"blocks\": [],\r\n  \"owner\": \"test_user\"\r\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{domain}}/files",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"files"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Obtener información de un archivo por ID",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{domain}}/files/{{file_id}}",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"files",
+								"{{file_id}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Obtener información de un archivo por ruta",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{domain}}/files/path/{{path}}",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"files",
+								"path",
+								"{{path}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Eliminar un archivo",
+					"request": {
+						"method": "DELETE",
+						"header": [],
+						"url": {
+							"raw": "{{domain}}/files/{{file_id}}",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"files",
+								"{{file_id}}"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		},
+		{
+			"name": "Gestión bloques",
+			"item": [
+				{
+					"name": "Reportar estado de bloques",
+					"request": {
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "[\r\n  {\r\n    \"block_id\": \"block1\",\r\n    \"file_id\": \"[FILE_ID]\",\r\n    \"size\": 1024,\r\n    \"locations\": [\r\n      {\r\n        \"block_id\": \"block1\",\r\n        \"datanode_id\": \"[DATANODE_ID]\",\r\n        \"is_leader\": true\r\n      }\r\n    ],\r\n    \"checksum\": \"abcdef\"\r\n  }\r\n]",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{domain}}/blocks/report",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"blocks",
+								"report"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Obtener información de un bloque",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "/blocks/{{block_id}}",
+							"path": [
+								"blocks",
+								"{{block_id}}"
+							]
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Obtener bloques de un archivo",
+					"request": {
+						"method": "GET",
+						"header": [],
+						"url": {
+							"raw": "{{domain}}//blocks/file/{{file_id}}",
+							"host": [
+								"{{domain}}"
+							],
+							"path": [
+								"",
+								"blocks",
+								"file",
+								"{{file_id}}"
+							]
+						}
+					},
+					"response": []
+				}
+			]
+		}
+	],
+	"event": [
+		{
+			"listen": "prerequest",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"exec": [
+					""
+				]
+			}
+		},
+		{
+			"listen": "test",
+			"script": {
+				"type": "text/javascript",
+				"packages": {},
+				"exec": [
+					""
+				]
+			}
+		}
+	],
+	"variable": [
+		{
+			"key": "domain",
+			"value": "http://localhost:8000",
+			"type": "string"
+		},
+		{
+			"key": "node_id",
+			"value": "f1e05578-82b3-45d7-9616-812449ce6ece",
+			"type": "string"
+		},
+		{
+			"key": "path",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "file_id",
+			"value": "",
+			"type": "string"
+		},
+		{
+			"key": "block_id",
+			"value": "",
+			"type": "default"
+		}
+	]
+}
