@@ -102,7 +102,7 @@ def simulate_datanode_heartbeat(namenode_url, node_id, hostname, port, storage_s
 
 def main():
     # Verificar que el NameNode esté en ejecución
-    namenode_url = "http://localhost:8001"
+    namenode_url = "http://localhost:8000"
     try:
         response = requests.get(f"{namenode_url}/health")
         if response.status_code != 200:
