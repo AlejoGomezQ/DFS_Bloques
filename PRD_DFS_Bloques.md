@@ -11,7 +11,7 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 ### Fase 1: Infraestructura Básica y Comunicación
 - [✓] 1.1 Definir interfaces y contratos de comunicación (REST y gRPC)
 - [✓] 1.2 Implementar NameNode básico con gestión de metadatos
-- [  ] 1.3 Implementar DataNode básico con almacenamiento local
+- [✓] 1.3 Implementar DataNode básico con almacenamiento local
 - [  ] 1.4 Establecer comunicación NameNode-DataNode (canal de control)
 
 ### Fase 2: Operaciones Fundamentales
@@ -53,10 +53,10 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
   - [✓] Endpoint para obtener ubicación de bloques
   - [✓] Endpoint para reportar estado de bloques
 ### DataNode
-- [  ] **Almacenamiento de Bloques**
-  - [  ] Sistema de archivos local para almacenar bloques
-  - [  ] Identificación única de bloques
-  - [  ] Gestión de espacio disponible
+- [✓] **Almacenamiento de Bloques**
+  - [✓] Sistema de archivos local para almacenar bloques
+  - [✓] Identificación única de bloques
+  - [✓] Gestión de espacio disponible
 
 - [✓] **Servicio gRPC (Canal de Datos)**
   - [✓] Servicio para recibir bloques de clientes
