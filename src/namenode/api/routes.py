@@ -10,7 +10,9 @@ from src.namenode.api.models import (
     FileMetadata, 
     DirectoryListing,
     ErrorResponse,
-    FileType
+    FileType,
+    HeartbeatRequest,
+    BlockStatusInfo
 )
 from src.namenode.metadata.manager import MetadataManager
 
@@ -191,7 +193,7 @@ async def get_datanode(node_id: str = Path(..., description="The ID of the DataN
 @datanodes_router.post("/{node_id}/heartbeat", status_code=204)
 async def datanode_heartbeat(
     node_id: str = Path(..., description="The ID of the DataNode sending the heartbeat"),
-    available_space: int = Body(..., embed=True, description="Available space in bytes"),
+    heartbeat: HeartbeatRequest = Body(..., description="Heartbeat information including available space and blocks"),
     manager: MetadataManager = Depends(get_metadata_manager)
 ):
     """
@@ -201,9 +203,27 @@ async def datanode_heartbeat(
     if not datanode:
         raise HTTPException(status_code=404, detail=f"DataNode not found with ID: {node_id}")
     
-    success = manager.update_datanode_heartbeat(node_id, available_space)
+    # Verificar que el node_id en la ruta coincide con el del cuerpo
+    if node_id != heartbeat.node_id:
+        raise HTTPException(status_code=400, detail="Node ID in path does not match node ID in request body")
+    
+    # Actualizar el heartbeat y el espacio disponible
+    success = manager.update_datanode_heartbeat(node_id, heartbeat.available_space)
     if not success:
         raise HTTPException(status_code=500, detail="Failed to update DataNode heartbeat")
+    
+    # Procesar la información de los bloques
+    for block_id, block_info in heartbeat.blocks.items():
+        # Verificar si el bloque ya existe en el sistema
+        existing_block = manager.get_block_info(block_id)
+        
+        if not existing_block:
+            # Si el bloque no existe, lo registramos como un bloque huérfano
+            # En una implementación completa, podríamos verificar si pertenece a algún archivo
+            continue
+        
+        # Actualizar la ubicación del bloque
+        manager.add_block_location(block_id, node_id, False)  # Por ahora, no es líder
     
     return None
 

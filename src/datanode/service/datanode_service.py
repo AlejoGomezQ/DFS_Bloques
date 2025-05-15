@@ -88,8 +88,15 @@ class DataNodeServicer:
             return 1000000000  # Default 1GB if can't determine
     
     def _get_storage_stats(self):
+        # Obtener estadísticas completas del almacenamiento
         stats = self.storage.get_storage_stats()
-        stats["available_space"] = self.storage.get_available_space()
+        
+        # Registrar información en el log
+        self.logger.info(f"DataNode {self.node_id} storage stats: "
+                        f"{stats['total_blocks']} blocks, "
+                        f"{stats['total_size']} bytes used, "
+                        f"{stats['available_space']} bytes available")
+        
         return stats
     
     # Implementación de los métodos gRPC

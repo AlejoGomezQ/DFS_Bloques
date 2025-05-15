@@ -76,17 +76,28 @@ class BlockStorage:
         total_blocks = 0
         total_size = 0
         blocks = self.get_all_blocks()
+        block_sizes = {}
+        block_checksums = {}
         
         for block_id in blocks:
             size = self.get_block_size(block_id)
+            checksum = self.calculate_checksum(block_id)
+            
             if size is not None:
                 total_blocks += 1
                 total_size += size
+                block_sizes[block_id] = size
+            
+            if checksum is not None:
+                block_checksums[block_id] = checksum
         
         return {
             "total_blocks": total_blocks,
             "total_size": total_size,
-            "blocks": blocks
+            "blocks": blocks,
+            "block_sizes": block_sizes,
+            "block_checksums": block_checksums,
+            "available_space": self.get_available_space()
         }
     
     def get_available_space(self) -> int:

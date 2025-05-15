@@ -12,7 +12,7 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 - [✓] 1.1 Definir interfaces y contratos de comunicación (REST y gRPC)
 - [✓] 1.2 Implementar NameNode básico con gestión de metadatos
 - [✓] 1.3 Implementar DataNode básico con almacenamiento local
-- [  ] 1.4 Establecer comunicación NameNode-DataNode (canal de control)
+- [✓] 1.4 Establecer comunicación NameNode-DataNode (canal de control)
 
 ### Fase 2: Operaciones Fundamentales
 - [  ] 2.1 Implementar particionamiento de archivos en bloques
