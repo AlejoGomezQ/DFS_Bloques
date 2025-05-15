@@ -1,5 +1,6 @@
-from fastapi import APIRouter, HTTPException, Path, Query, Body
+from fastapi import APIRouter, HTTPException, Path, Query, Body, Depends
 from typing import List, Optional
+import os
 
 # Importación absoluta en lugar de relativa
 from src.namenode.api.models import (
@@ -8,8 +9,17 @@ from src.namenode.api.models import (
     BlockInfo, 
     FileMetadata, 
     DirectoryListing,
-    ErrorResponse
+    ErrorResponse,
+    FileType
 )
+from src.namenode.metadata.manager import MetadataManager
+
+# Singleton instance of MetadataManager
+metadata_manager = MetadataManager()
+
+# Dependency to get the metadata manager
+def get_metadata_manager():
+    return metadata_manager
 
 # Routers
 files_router = APIRouter(prefix="/files", tags=["Files"])
@@ -19,136 +29,253 @@ directories_router = APIRouter(prefix="/directories", tags=["Directories"])
 
 # Files Endpoints
 @files_router.post("/", response_model=FileMetadata, status_code=201)
-async def create_file(file_metadata: FileMetadata):
+async def create_file(file_metadata: FileMetadata, manager: MetadataManager = Depends(get_metadata_manager)):
     """
     Register a new file in the system.
     """
-    return file_metadata
+    # Verificar si ya existe un archivo con la misma ruta
+    existing_file = manager.get_file_by_path(file_metadata.path)
+    if existing_file:
+        raise HTTPException(status_code=409, detail=f"File already exists at path: {file_metadata.path}")
+    
+    # Verificar que el directorio padre existe
+    parent_path = os.path.dirname(file_metadata.path)
+    if parent_path and not manager.get_file_by_path(parent_path):
+        raise HTTPException(status_code=404, detail=f"Parent directory does not exist: {parent_path}")
+    
+    # Crear el archivo en el sistema
+    created_file = manager.create_file(
+        name=file_metadata.name,
+        path=file_metadata.path,
+        file_type=file_metadata.type,
+        size=file_metadata.size,
+        owner=file_metadata.owner
+    )
+    
+    if not created_file:
+        raise HTTPException(status_code=500, detail="Failed to create file")
+    
+    return created_file
 
 @files_router.get("/{file_id}", response_model=FileMetadata)
-async def get_file(file_id: str = Path(..., description="The ID of the file to retrieve")):
+async def get_file(file_id: str = Path(..., description="The ID of the file to retrieve"), manager: MetadataManager = Depends(get_metadata_manager)):
     """
     Get file metadata by ID.
     """
-    return FileMetadata(file_id=file_id, name="example", path="/example", type="file", size=1024)
+    file = manager.get_file(file_id)
+    if not file:
+        raise HTTPException(status_code=404, detail=f"File not found with ID: {file_id}")
+    
+    return file
 
 @files_router.delete("/{file_id}", status_code=204)
-async def delete_file(file_id: str = Path(..., description="The ID of the file to delete")):
+async def delete_file(file_id: str = Path(..., description="The ID of the file to delete"), manager: MetadataManager = Depends(get_metadata_manager)):
     """
     Delete a file and its associated blocks.
     """
+    file = manager.get_file(file_id)
+    if not file:
+        raise HTTPException(status_code=404, detail=f"File not found with ID: {file_id}")
+    
+    if file.type == FileType.DIRECTORY:
+        raise HTTPException(status_code=400, detail="Cannot delete directory using this endpoint. Use /directories endpoint instead.")
+    
+    success = manager.delete_file(file_id)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to delete file")
+    
     return None
 
 @files_router.get("/path/{path:path}", response_model=FileMetadata)
-async def get_file_by_path(path: str = Path(..., description="The path of the file to retrieve")):
+async def get_file_by_path(path: str = Path(..., description="The path of the file to retrieve"), manager: MetadataManager = Depends(get_metadata_manager)):
     """
     Get file metadata by path.
     """
-    return FileMetadata(file_id="123", name="example", path=path, type="file", size=1024)
+    file = manager.get_file_by_path(path)
+    if not file:
+        raise HTTPException(status_code=404, detail=f"File not found at path: {path}")
+    
+    return file
 
 # Blocks Endpoints
 @blocks_router.get("/{block_id}", response_model=BlockInfo)
-async def get_block_info(block_id: str = Path(..., description="The ID of the block to retrieve")):
+async def get_block_info(block_id: str = Path(..., description="The ID of the block to retrieve"), manager: MetadataManager = Depends(get_metadata_manager)):
     """
     Get information about a specific block.
     """
-    return BlockInfo(block_id=block_id, file_id="123", size=1024, locations=[])
+    block = manager.get_block_info(block_id)
+    if not block:
+        raise HTTPException(status_code=404, detail=f"Block not found with ID: {block_id}")
+    
+    return block
 
 @blocks_router.get("/file/{file_id}", response_model=List[BlockInfo])
-async def get_file_blocks(file_id: str = Path(..., description="The ID of the file to retrieve blocks for")):
+async def get_file_blocks(file_id: str = Path(..., description="The ID of the file to retrieve blocks for"), manager: MetadataManager = Depends(get_metadata_manager)):
     """
     Get all blocks associated with a file.
     """
-    return [BlockInfo(block_id="block1", file_id=file_id, size=1024, locations=[])]
+    file = manager.get_file(file_id)
+    if not file:
+        raise HTTPException(status_code=404, detail=f"File not found with ID: {file_id}")
+    
+    if file.type == FileType.DIRECTORY:
+        raise HTTPException(status_code=400, detail="Directories do not have blocks")
+    
+    return manager.get_file_blocks(file_id)
 
 @blocks_router.post("/report", status_code=204)
-async def report_block_status(block_reports: List[BlockInfo]):
+async def report_block_status(block_reports: List[BlockInfo], manager: MetadataManager = Depends(get_metadata_manager)):
     """
     Report the status of blocks from a DataNode.
     """
+    for block_report in block_reports:
+        # Verificar si el bloque existe
+        existing_block = manager.get_block_info(block_report.block_id)
+        if not existing_block:
+            # Crear el bloque si no existe
+            manager.create_block(
+                file_id=block_report.file_id,
+                size=block_report.size,
+                checksum=block_report.checksum
+            )
+        
+        # Actualizar las ubicaciones del bloque
+        for location in block_report.locations:
+            # Verificar si el DataNode existe
+            datanode = manager.get_datanode(location.datanode_id)
+            if not datanode:
+                continue
+            
+            # Añadir la ubicación del bloque
+            manager.add_block_location(
+                block_id=block_report.block_id,
+                datanode_id=location.datanode_id,
+                is_leader=location.is_leader
+            )
+    
     return None
 
 # DataNodes Endpoints
 @datanodes_router.post("/register", response_model=DataNodeInfo, status_code=201)
-async def register_datanode(registration: DataNodeRegistration):
+async def register_datanode(registration: DataNodeRegistration, manager: MetadataManager = Depends(get_metadata_manager)):
     """
     Register a new DataNode in the system.
     """
-    return DataNodeInfo(
-        node_id="generated_id",
+    datanode = manager.register_datanode(
         hostname=registration.hostname,
         port=registration.port,
-        status="active",
         storage_capacity=registration.storage_capacity,
         available_space=registration.available_space
     )
+    
+    return datanode
 
 @datanodes_router.get("/", response_model=List[DataNodeInfo])
-async def list_datanodes(status: Optional[str] = Query(None, description="Filter by DataNode status")):
+async def list_datanodes(status: Optional[str] = Query(None, description="Filter by DataNode status"), manager: MetadataManager = Depends(get_metadata_manager)):
     """
     List all registered DataNodes.
     """
-    return [
-        DataNodeInfo(
-            node_id="node1",
-            hostname="localhost",
-            port=50051,
-            status="active",
-            storage_capacity=1024*1024*1024,
-            available_space=512*1024*1024,
-            blocks_stored=10
-        )
-    ]
+    return manager.list_datanodes(status)
 
 @datanodes_router.get("/{node_id}", response_model=DataNodeInfo)
-async def get_datanode(node_id: str = Path(..., description="The ID of the DataNode to retrieve")):
+async def get_datanode(node_id: str = Path(..., description="The ID of the DataNode to retrieve"), manager: MetadataManager = Depends(get_metadata_manager)):
     """
     Get information about a specific DataNode.
     """
-    return DataNodeInfo(
-        node_id=node_id,
-        hostname="localhost",
-        port=50051,
-        status="active",
-        storage_capacity=1024*1024*1024,
-        available_space=512*1024*1024,
-        blocks_stored=10
-    )
+    datanode = manager.get_datanode(node_id)
+    if not datanode:
+        raise HTTPException(status_code=404, detail=f"DataNode not found with ID: {node_id}")
+    
+    return datanode
 
 @datanodes_router.post("/{node_id}/heartbeat", status_code=204)
 async def datanode_heartbeat(
     node_id: str = Path(..., description="The ID of the DataNode sending the heartbeat"),
-    available_space: int = Body(..., embed=True, description="Available space in bytes")
+    available_space: int = Body(..., embed=True, description="Available space in bytes"),
+    manager: MetadataManager = Depends(get_metadata_manager)
 ):
     """
     Process a heartbeat from a DataNode.
     """
+    datanode = manager.get_datanode(node_id)
+    if not datanode:
+        raise HTTPException(status_code=404, detail=f"DataNode not found with ID: {node_id}")
+    
+    success = manager.update_datanode_heartbeat(node_id, available_space)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to update DataNode heartbeat")
+    
     return None
 
 # Directories Endpoints
 @directories_router.post("/", response_model=FileMetadata, status_code=201)
-async def create_directory(directory: FileMetadata):
+async def create_directory(directory: FileMetadata, manager: MetadataManager = Depends(get_metadata_manager)):
     """
     Create a new directory.
     """
-    return directory
+    if directory.type != FileType.DIRECTORY:
+        raise HTTPException(status_code=400, detail="Type must be 'directory'")
+    
+    # Verificar si ya existe un directorio con la misma ruta
+    existing_dir = manager.get_file_by_path(directory.path)
+    if existing_dir:
+        raise HTTPException(status_code=409, detail=f"Directory already exists at path: {directory.path}")
+    
+    # Verificar que el directorio padre existe
+    parent_path = os.path.dirname(directory.path)
+    if parent_path and not manager.get_file_by_path(parent_path):
+        raise HTTPException(status_code=404, detail=f"Parent directory does not exist: {parent_path}")
+    
+    # Crear el directorio en el sistema
+    created_dir = manager.create_file(
+        name=directory.name,
+        path=directory.path,
+        file_type=FileType.DIRECTORY,
+        owner=directory.owner
+    )
+    
+    if not created_dir:
+        raise HTTPException(status_code=500, detail="Failed to create directory")
+    
+    return created_dir
 
 @directories_router.get("/{path:path}", response_model=DirectoryListing)
-async def list_directory(path: str = Path(..., description="The path of the directory to list")):
+async def list_directory(path: str = Path(..., description="The path of the directory to list"), manager: MetadataManager = Depends(get_metadata_manager)):
     """
     List the contents of a directory.
     """
-    return DirectoryListing(
-        path=path,
-        contents=[
-            FileMetadata(file_id="123", name="example.txt", path=f"{path}/example.txt", type="file", size=1024),
-            FileMetadata(file_id="456", name="subdir", path=f"{path}/subdir", type="directory", size=0)
-        ]
-    )
+    # Verificar si el directorio existe
+    dir_info = manager.get_file_by_path(path)
+    if not dir_info:
+        # Si es la raíz y no existe, intentar crearla
+        if path == "" or path == "/":
+            manager.create_file(name="", path="", file_type=FileType.DIRECTORY)
+        else:
+            raise HTTPException(status_code=404, detail=f"Directory not found at path: {path}")
+    elif dir_info.type != FileType.DIRECTORY:
+        raise HTTPException(status_code=400, detail=f"Path is not a directory: {path}")
+    
+    return manager.list_directory(path)
 
 @directories_router.delete("/{path:path}", status_code=204)
-async def delete_directory(path: str = Path(..., description="The path of the directory to delete")):
+async def delete_directory(path: str = Path(..., description="The path of the directory to delete"), manager: MetadataManager = Depends(get_metadata_manager)):
     """
     Delete a directory and all its contents.
     """
+    # Verificar si el directorio existe
+    dir_info = manager.get_file_by_path(path)
+    if not dir_info:
+        raise HTTPException(status_code=404, detail=f"Directory not found at path: {path}")
+    
+    if dir_info.type != FileType.DIRECTORY:
+        raise HTTPException(status_code=400, detail=f"Path is not a directory: {path}")
+    
+    # No permitir eliminar el directorio raíz
+    if path == "" or path == "/":
+        raise HTTPException(status_code=400, detail="Cannot delete root directory")
+    
+    success = manager.delete_directory(path)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to delete directory")
+    
     return None
