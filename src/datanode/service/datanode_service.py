@@ -9,57 +9,10 @@ from typing import Dict, Optional, Iterator
 from src.datanode.storage.block_storage import BlockStorage
 from src.datanode.registration import DataNodeRegistration
 
-# Estos imports se usarán cuando se genere el código gRPC
-# Para desarrollo, definimos clases mock para poder implementar la funcionalidad
-class MockContext:
-    def set_code(self, code):
-        pass
-    
-    def set_details(self, details):
-        pass
+# Importamos los módulos generados por gRPC
+from src.common.proto import datanode_pb2, datanode_pb2_grpc
 
-class MockBlockRequest:
-    def __init__(self, block_id):
-        self.block_id = block_id
-
-class MockBlockData:
-    def __init__(self, block_id, data, offset=0, total_size=0):
-        self.block_id = block_id
-        self.data = data
-        self.offset = offset
-        self.total_size = total_size
-
-class MockBlockResponse:
-    def __init__(self, status=0, message="", block_id=""):
-        self.status = status
-        self.message = message
-        self.block_id = block_id
-
-class MockBlockStatus:
-    def __init__(self, exists=False, size=0, checksum=""):
-        self.exists = exists
-        self.size = size
-        self.checksum = checksum
-
-class MockReplicationRequest:
-    def __init__(self, block_id, target_datanode_id, target_hostname, target_port):
-        self.block_id = block_id
-        self.target_datanode_id = target_datanode_id
-        self.target_hostname = target_hostname
-        self.target_port = target_port
-
-class MockTransferRequest:
-    def __init__(self, block_id, source_datanode_id, source_hostname, source_port,
-                 target_datanode_id, target_hostname, target_port):
-        self.block_id = block_id
-        self.source_datanode_id = source_datanode_id
-        self.source_hostname = source_hostname
-        self.source_port = source_port
-        self.target_datanode_id = target_datanode_id
-        self.target_hostname = target_hostname
-        self.target_port = target_port
-
-class DataNodeServicer:
+class DataNodeServicer(datanode_pb2_grpc.DataNodeServiceServicer):
     def __init__(self, storage_dir: str, node_id: str, hostname: str, port: int, namenode_url: str = None):
         self.node_id = node_id
         self.hostname = hostname
@@ -112,29 +65,40 @@ class DataNodeServicer:
                 block_data.extend(chunk.data)
             
             if block_id is None:
-                return MockBlockResponse(
-                    status=1,  # ERROR
+                return datanode_pb2.BlockResponse(
+                    status=datanode_pb2.BlockResponse.ERROR,
                     message="No block ID provided"
                 )
             
+            # Verificar si el bloque ya existe
+            if self.storage.block_exists(block_id):
+                self.logger.warning(f"Block {block_id} already exists, overwriting")
+            
+            # Almacenar el bloque
             success = self.storage.store_block(block_id, block_data)
             
+            # Calcular el checksum para verificar la integridad
+            checksum = None
             if success:
-                return MockBlockResponse(
-                    status=0,  # SUCCESS
-                    message="Block stored successfully",
+                checksum = self.storage.calculate_checksum(block_id)
+                self.logger.info(f"Stored block {block_id} with checksum {checksum}")
+            
+            if success:
+                return datanode_pb2.BlockResponse(
+                    status=datanode_pb2.BlockResponse.SUCCESS,
+                    message=f"Block stored successfully with checksum {checksum}",
                     block_id=block_id
                 )
             else:
-                return MockBlockResponse(
-                    status=1,  # ERROR
+                return datanode_pb2.BlockResponse(
+                    status=datanode_pb2.BlockResponse.ERROR,
                     message="Failed to store block",
                     block_id=block_id
                 )
         except Exception as e:
             self.logger.error(f"Error storing block: {str(e)}")
-            return MockBlockResponse(
-                status=1,  # ERROR
+            return datanode_pb2.BlockResponse(
+                status=datanode_pb2.BlockResponse.ERROR,
                 message=f"Error: {str(e)}",
                 block_id=block_id if block_id else ""
             )
@@ -143,20 +107,31 @@ class DataNodeServicer:
         """Recupera un bloque de datos y lo envía al cliente."""
         block_id = request.block_id
         
+        # Verificar si el bloque existe
         if not self.storage.block_exists(block_id):
             context.set_code(grpc.StatusCode.NOT_FOUND)
             context.set_details(f"Block {block_id} not found")
             return
         
         try:
+            # Verificar la integridad del bloque antes de enviarlo
+            stored_checksum = self.storage.calculate_checksum(block_id)
+            if not stored_checksum:
+                context.set_code(grpc.StatusCode.DATA_LOSS)
+                context.set_details(f"Block {block_id} appears to be corrupted")
+                return
+            
+            # Obtener los chunks del bloque
             chunks = self.storage.stream_block(block_id)
             if chunks is None:
                 context.set_code(grpc.StatusCode.INTERNAL)
                 context.set_details(f"Error reading block {block_id}")
                 return
             
+            # Enviar los chunks al cliente
+            self.logger.info(f"Retrieving block {block_id} with checksum {stored_checksum}")
             for chunk, offset, total_size in chunks:
-                yield MockBlockData(
+                yield datanode_pb2.BlockData(
                     block_id=block_id,
                     data=chunk,
                     offset=offset,
@@ -174,29 +149,71 @@ class DataNodeServicer:
         target_hostname = request.target_hostname
         target_port = request.target_port
         
+        # Verificar si el bloque existe
         if not self.storage.block_exists(block_id):
-            return MockBlockResponse(
-                status=2,  # NOT_FOUND
+            return datanode_pb2.BlockResponse(
+                status=datanode_pb2.BlockResponse.NOT_FOUND,
                 message=f"Block {block_id} not found",
                 block_id=block_id
             )
         
         try:
-            # En una implementación real, aquí estableceríamos una conexión gRPC
-            # con el DataNode objetivo y enviaríamos el bloque
-            # Para esta implementación básica, simulamos que la replicación fue exitosa
+            # Obtener los datos del bloque
+            block_data = self.storage.retrieve_block(block_id)
+            if not block_data:
+                return datanode_pb2.BlockResponse(
+                    status=datanode_pb2.BlockResponse.ERROR,
+                    message=f"Error reading block {block_id}",
+                    block_id=block_id
+                )
             
-            self.logger.info(f"Replicating block {block_id} to {target_datanode_id} at {target_hostname}:{target_port}")
-            
-            return MockBlockResponse(
-                status=0,  # SUCCESS
-                message=f"Block {block_id} replicated to {target_datanode_id}",
-                block_id=block_id
-            )
+            # Establecer conexión con el DataNode objetivo
+            try:
+                channel = grpc.insecure_channel(f"{target_hostname}:{target_port}")
+                stub = datanode_pb2_grpc.DataNodeServiceStub(channel)
+                
+                # Enviar el bloque al DataNode objetivo
+                def block_data_iterator():
+                    chunk_size = 4096
+                    total_size = len(block_data)
+                    
+                    for i in range(0, total_size, chunk_size):
+                        chunk = block_data[i:i+chunk_size]
+                        yield datanode_pb2.BlockData(
+                            block_id=block_id,
+                            data=chunk,
+                            offset=i,
+                            total_size=total_size
+                        )
+                
+                response = stub.StoreBlock(block_data_iterator())
+                channel.close()
+                
+                if response.status == datanode_pb2.BlockResponse.SUCCESS:
+                    self.logger.info(f"Block {block_id} replicated to {target_datanode_id} at {target_hostname}:{target_port}")
+                    return datanode_pb2.BlockResponse(
+                        status=datanode_pb2.BlockResponse.SUCCESS,
+                        message=f"Block {block_id} replicated to {target_datanode_id}",
+                        block_id=block_id
+                    )
+                else:
+                    self.logger.error(f"Failed to replicate block {block_id}: {response.message}")
+                    return datanode_pb2.BlockResponse(
+                        status=datanode_pb2.BlockResponse.ERROR,
+                        message=f"Failed to replicate block: {response.message}",
+                        block_id=block_id
+                    )
+            except Exception as e:
+                self.logger.error(f"Error connecting to target DataNode: {str(e)}")
+                return datanode_pb2.BlockResponse(
+                    status=datanode_pb2.BlockResponse.ERROR,
+                    message=f"Error connecting to target DataNode: {str(e)}",
+                    block_id=block_id
+                )
         except Exception as e:
             self.logger.error(f"Error replicating block: {str(e)}")
-            return MockBlockResponse(
-                status=1,  # ERROR
+            return datanode_pb2.BlockResponse(
+                status=datanode_pb2.BlockResponse.ERROR,
                 message=f"Error: {str(e)}",
                 block_id=block_id
             )
@@ -205,16 +222,79 @@ class DataNodeServicer:
         """Transfiere un bloque entre DataNodes."""
         block_id = request.block_id
         source_datanode_id = request.source_datanode_id
+        source_hostname = request.source_hostname
+        source_port = request.source_port
         target_datanode_id = request.target_datanode_id
+        target_hostname = request.target_hostname
+        target_port = request.target_port
         
-        # En esta implementación básica, simulamos la transferencia
-        self.logger.info(f"Transferring block {block_id} from {source_datanode_id} to {target_datanode_id}")
-        
-        return MockBlockResponse(
-            status=0,  # SUCCESS
-            message=f"Block {block_id} transferred from {source_datanode_id} to {target_datanode_id}",
-            block_id=block_id
-        )
+        try:
+            # Establecer conexión con el DataNode origen
+            source_channel = grpc.insecure_channel(f"{source_hostname}:{source_port}")
+            source_stub = datanode_pb2_grpc.DataNodeServiceStub(source_channel)
+            
+            # Establecer conexión con el DataNode destino
+            target_channel = grpc.insecure_channel(f"{target_hostname}:{target_port}")
+            target_stub = datanode_pb2_grpc.DataNodeServiceStub(target_channel)
+            
+            # Solicitar el bloque al DataNode origen
+            block_request = datanode_pb2.BlockRequest(block_id=block_id)
+            block_data = bytearray()
+            
+            try:
+                # Recuperar el bloque del DataNode origen
+                for chunk in source_stub.RetrieveBlock(block_request):
+                    block_data.extend(chunk.data)
+                
+                # Enviar el bloque al DataNode destino
+                def block_data_iterator():
+                    chunk_size = 4096
+                    total_size = len(block_data)
+                    
+                    for i in range(0, total_size, chunk_size):
+                        chunk = block_data[i:i+chunk_size]
+                        yield datanode_pb2.BlockData(
+                            block_id=block_id,
+                            data=chunk,
+                            offset=i,
+                            total_size=total_size
+                        )
+                
+                # Almacenar el bloque en el DataNode destino
+                response = target_stub.StoreBlock(block_data_iterator())
+                
+                # Cerrar las conexiones
+                source_channel.close()
+                target_channel.close()
+                
+                if response.status == datanode_pb2.BlockResponse.SUCCESS:
+                    self.logger.info(f"Block {block_id} transferred from {source_datanode_id} to {target_datanode_id}")
+                    return datanode_pb2.BlockResponse(
+                        status=datanode_pb2.BlockResponse.SUCCESS,
+                        message=f"Block {block_id} transferred from {source_datanode_id} to {target_datanode_id}",
+                        block_id=block_id
+                    )
+                else:
+                    self.logger.error(f"Failed to transfer block {block_id}: {response.message}")
+                    return datanode_pb2.BlockResponse(
+                        status=datanode_pb2.BlockResponse.ERROR,
+                        message=f"Failed to transfer block: {response.message}",
+                        block_id=block_id
+                    )
+            except Exception as e:
+                self.logger.error(f"Error during block transfer: {str(e)}")
+                return datanode_pb2.BlockResponse(
+                    status=datanode_pb2.BlockResponse.ERROR,
+                    message=f"Error during block transfer: {str(e)}",
+                    block_id=block_id
+                )
+        except Exception as e:
+            self.logger.error(f"Error setting up transfer: {str(e)}")
+            return datanode_pb2.BlockResponse(
+                status=datanode_pb2.BlockResponse.ERROR,
+                message=f"Error setting up transfer: {str(e)}",
+                block_id=block_id
+            )
     
     def CheckBlock(self, request, context):
         """Verifica si un bloque existe en el DataNode."""
@@ -224,13 +304,15 @@ class DataNodeServicer:
         if exists:
             size = self.storage.get_block_size(block_id)
             checksum = self.storage.calculate_checksum(block_id)
-            return MockBlockStatus(
+            self.logger.info(f"Block {block_id} exists with size {size} and checksum {checksum}")
+            return datanode_pb2.BlockStatus(
                 exists=True,
                 size=size if size is not None else 0,
                 checksum=checksum if checksum is not None else ""
             )
         else:
-            return MockBlockStatus(
+            self.logger.info(f"Block {block_id} does not exist")
+            return datanode_pb2.BlockStatus(
                 exists=False,
                 size=0,
                 checksum=""
@@ -241,8 +323,9 @@ class DataNodeServicer:
         block_id = request.block_id
         
         if not self.storage.block_exists(block_id):
-            return MockBlockResponse(
-                status=2,  # NOT_FOUND
+            self.logger.warning(f"Attempted to delete non-existent block {block_id}")
+            return datanode_pb2.BlockResponse(
+                status=datanode_pb2.BlockResponse.NOT_FOUND,
                 message=f"Block {block_id} not found",
                 block_id=block_id
             )
@@ -250,14 +333,16 @@ class DataNodeServicer:
         success = self.storage.delete_block(block_id)
         
         if success:
-            return MockBlockResponse(
-                status=0,  # SUCCESS
+            self.logger.info(f"Block {block_id} deleted successfully")
+            return datanode_pb2.BlockResponse(
+                status=datanode_pb2.BlockResponse.SUCCESS,
                 message=f"Block {block_id} deleted successfully",
                 block_id=block_id
             )
         else:
-            return MockBlockResponse(
-                status=1,  # ERROR
+            self.logger.error(f"Failed to delete block {block_id}")
+            return datanode_pb2.BlockResponse(
+                status=datanode_pb2.BlockResponse.ERROR,
                 message=f"Failed to delete block {block_id}",
                 block_id=block_id
             )
@@ -275,9 +360,8 @@ def serve(node_id: str, hostname: str, port: int, storage_dir: str, namenode_url
     # Crear el servicio
     servicer = DataNodeServicer(storage_dir, node_id, hostname, port, namenode_url)
     
-    # Registrar el servicio
-    # En una implementación real con gRPC generado:
-    # datanode_pb2_grpc.add_DataNodeServiceServicer_to_server(servicer, server)
+    # Registrar el servicio con gRPC
+    datanode_pb2_grpc.add_DataNodeServiceServicer_to_server(servicer, server)
     
     server.add_insecure_port(f'{hostname}:{port}')
     server.start()
