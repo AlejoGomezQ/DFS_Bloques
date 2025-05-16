@@ -301,6 +301,18 @@ class MetadataManager:
             ))
         
         return result
+        
+    def update_block(self, block_id: str, **kwargs) -> bool:
+        """Actualiza la información de un bloque en la base de datos.
+        
+        Args:
+            block_id: ID del bloque a actualizar
+            **kwargs: Campos a actualizar (size, checksum, etc.)
+            
+        Returns:
+            True si la actualización fue exitosa, False en caso contrario
+        """
+        return self.db.update_block(block_id, **kwargs)
     
     def close(self):
         self.db.close_connection()

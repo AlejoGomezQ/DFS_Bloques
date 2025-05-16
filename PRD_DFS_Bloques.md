@@ -15,10 +15,10 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 - [✓] 1.4 Establecer comunicación NameNode-DataNode (canal de control)
 
 ### Fase 2: Operaciones Fundamentales
-- [  ] 2.1 Implementar particionamiento de archivos en bloques
-- [  ] 2.2 Desarrollar algoritmo de distribución de bloques
-- [  ] 2.3 Implementar operaciones básicas en NameNode (registro de archivos y bloques)
-- [  ] 2.4 Implementar operaciones básicas en DataNode (almacenar y recuperar bloques)
+- [✓] 2.1 Implementar particionamiento de archivos en bloques
+- [✓] 2.2 Desarrollar algoritmo de distribución de bloques
+- [✓] 2.3 Implementar operaciones básicas en NameNode (registro de archivos y bloques)
+- [✓] 2.4 Implementar operaciones básicas en DataNode (almacenar y recuperar bloques)
 
 ### Fase 3: Cliente y Operaciones de Archivos
 - [  ] 3.1 Desarrollar cliente CLI básico
@@ -103,13 +103,13 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 
 ## Algoritmos Clave
 
-- [  ] **Particionamiento de Archivos**
-  - [  ] División de archivos en bloques de tamaño fijo
-  - [  ] Asignación de identificadores únicos a bloques
+- [✓] **Particionamiento de Archivos**
+  - [✓] División de archivos en bloques de tamaño fijo
+  - [✓] Asignación de identificadores únicos a bloques
 
-- [  ] **Distribución de Bloques**
-  - [  ] Selección de DataNodes basada en disponibilidad y carga
-  - [  ] Asignación de roles Leader/Follower para cada bloque
+- [✓] **Distribución de Bloques**
+  - [✓] Selección de DataNodes basada en disponibilidad y carga
+  - [✓] Asignación de roles Leader/Follower para cada bloque
 
 - [  ] **Replicación de Bloques**
   - [  ] Protocolo de replicación Leader-Follower
@@ -159,12 +159,12 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 
 ### Gestión de Archivos
 
-- [  ] **Particionamiento de Archivos**
-  - [  ] División de archivos en bloques de tamaño configurable
-  - [  ] Asignación de identificadores únicos a cada bloque
+- [✓] **Particionamiento de Archivos**
+  - [✓] División de archivos en bloques de tamaño configurable
+  - [✓] Asignación de identificadores únicos a cada bloque
 
 - [  ] **Almacenamiento de Archivos**
-  - [  ] Algoritmo para distribución de bloques entre DataNodes
+  - [✓] Algoritmo para distribución de bloques entre DataNodes
   - [  ] Proceso de escritura directa Cliente-DataNode
   - [  ] Replicación de bloques entre DataNodes (Leader-Follower)
 
