@@ -282,6 +282,35 @@ class MetadataDatabase:
         if row:
             return dict(row)
         return None
+        
+    def update_block(self, block_id: str, **kwargs) -> bool:
+        """Actualiza la información de un bloque en la base de datos.
+        
+        Args:
+            block_id: ID del bloque a actualizar
+            **kwargs: Campos a actualizar (size, checksum, etc.)
+            
+        Returns:
+            True si la actualización fue exitosa, False en caso contrario
+        """
+        if not kwargs:
+            return False
+        
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        # Construir la consulta SQL dinámicamente
+        set_clause = ', '.join([f"{key} = ?" for key in kwargs.keys()])
+        query = f"UPDATE blocks SET {set_clause} WHERE block_id = ?"
+        
+        # Preparar los valores para la consulta
+        values = list(kwargs.values())
+        values.append(block_id)
+        
+        cursor.execute(query, values)
+        
+        conn.commit()
+        return cursor.rowcount > 0
     
     def get_file_blocks(self, file_id: str) -> List[Dict[str, Any]]:
         conn = self.get_connection()

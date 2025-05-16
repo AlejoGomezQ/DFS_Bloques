@@ -7,6 +7,7 @@ from src.namenode.api.models import (
     DataNodeRegistration, 
     DataNodeInfo, 
     BlockInfo, 
+    BlockLocation,
     FileMetadata, 
     DirectoryListing,
     ErrorResponse,
@@ -125,6 +126,43 @@ async def get_file_blocks(file_id: str = Path(..., description="The ID of the fi
     
     return manager.get_file_blocks(file_id)
 
+@blocks_router.post("/", response_model=BlockInfo, status_code=201)
+async def create_block(block_info: BlockInfo = Body(..., description="Block information"), manager: MetadataManager = Depends(get_metadata_manager)):
+    """
+    Register a new block in the system.
+    """
+    # Verificar que el archivo existe
+    file = manager.get_file(block_info.file_id)
+    if not file:
+        raise HTTPException(status_code=404, detail=f"File not found with ID: {block_info.file_id}")
+    
+    if file.type == FileType.DIRECTORY:
+        raise HTTPException(status_code=400, detail="Cannot add blocks to directories")
+    
+    # Crear el bloque
+    block_id = manager.create_block(
+        file_id=block_info.file_id,
+        size=block_info.size,
+        checksum=block_info.checksum
+    )
+    
+    # Si se proporcionaron ubicaciones, registrarlas
+    for location in block_info.locations:
+        # Verificar que el DataNode existe
+        datanode = manager.get_datanode(location.datanode_id)
+        if not datanode:
+            continue
+        
+        # Añadir la ubicación del bloque
+        manager.add_block_location(
+            block_id=block_id,
+            datanode_id=location.datanode_id,
+            is_leader=location.is_leader
+        )
+    
+    # Devolver la información del bloque creado
+    return manager.get_block_info(block_id)
+
 @blocks_router.post("/report", status_code=204)
 async def report_block_status(block_reports: List[BlockInfo], manager: MetadataManager = Depends(get_metadata_manager)):
     """
@@ -154,6 +192,87 @@ async def report_block_status(block_reports: List[BlockInfo], manager: MetadataM
                 datanode_id=location.datanode_id,
                 is_leader=location.is_leader
             )
+    
+    return None
+
+@blocks_router.put("/{block_id}", response_model=BlockInfo)
+async def update_block_info(block_id: str = Path(..., description="The ID of the block to update"), 
+                           block_info: BlockInfo = Body(..., description="Updated block information"),
+                           manager: MetadataManager = Depends(get_metadata_manager)):
+    """
+    Update information about a specific block.
+    """
+    # Verificar que el bloque existe
+    existing_block = manager.get_block_info(block_id)
+    if not existing_block:
+        raise HTTPException(status_code=404, detail=f"Block not found with ID: {block_id}")
+    
+    # Verificar que el ID del bloque coincide
+    if block_id != block_info.block_id:
+        raise HTTPException(status_code=400, detail="Block ID in path does not match block ID in request body")
+    
+    # Actualizar la información del bloque
+    manager.update_block(block_id, size=block_info.size, checksum=block_info.checksum)
+    
+    # Devolver la información actualizada del bloque
+    return manager.get_block_info(block_id)
+
+@blocks_router.post("/{block_id}/locations", status_code=201)
+async def add_block_location(block_id: str = Path(..., description="The ID of the block"),
+                            location: BlockLocation = Body(..., description="Location information"),
+                            manager: MetadataManager = Depends(get_metadata_manager)):
+    """
+    Add a new location for a block.
+    """
+    # Verificar que el bloque existe
+    existing_block = manager.get_block_info(block_id)
+    if not existing_block:
+        raise HTTPException(status_code=404, detail=f"Block not found with ID: {block_id}")
+    
+    # Verificar que el ID del bloque coincide
+    if block_id != location.block_id:
+        raise HTTPException(status_code=400, detail="Block ID in path does not match block ID in request body")
+    
+    # Verificar que el DataNode existe
+    datanode = manager.get_datanode(location.datanode_id)
+    if not datanode:
+        raise HTTPException(status_code=404, detail=f"DataNode not found with ID: {location.datanode_id}")
+    
+    # Añadir la ubicación del bloque
+    success = manager.add_block_location(
+        block_id=block_id,
+        datanode_id=location.datanode_id,
+        is_leader=location.is_leader
+    )
+    
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to add block location")
+    
+    # Devolver la información actualizada del bloque
+    return manager.get_block_info(block_id)
+
+@blocks_router.delete("/{block_id}/locations/{datanode_id}", status_code=204)
+async def remove_block_location(block_id: str = Path(..., description="The ID of the block"),
+                              datanode_id: str = Path(..., description="The ID of the DataNode"),
+                              manager: MetadataManager = Depends(get_metadata_manager)):
+    """
+    Remove a location for a block.
+    """
+    # Verificar que el bloque existe
+    existing_block = manager.get_block_info(block_id)
+    if not existing_block:
+        raise HTTPException(status_code=404, detail=f"Block not found with ID: {block_id}")
+    
+    # Verificar que el DataNode existe
+    datanode = manager.get_datanode(datanode_id)
+    if not datanode:
+        raise HTTPException(status_code=404, detail=f"DataNode not found with ID: {datanode_id}")
+    
+    # Eliminar la ubicación del bloque
+    success = manager.remove_block_location(block_id, datanode_id)
+    
+    if not success:
+        raise HTTPException(status_code=404, detail=f"Block location not found for block {block_id} and DataNode {datanode_id}")
     
     return None
 
