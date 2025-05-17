@@ -24,7 +24,7 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 - [✓] 3.1 Desarrollar cliente CLI básico
 - [✓] 3.2 Implementar operación PUT (subir archivo)
 - [✓] 3.3 Implementar operación GET (descargar archivo)
-- [  ] 3.4 Implementar operaciones de directorio (ls, mkdir)
+- [✓] 3.4 Implementar operaciones de directorio (ls, mkdir)
 
 ### Fase 4: Replicación y Tolerancia a Fallos
 - [  ] 4.1 Implementar mecanismo de replicación Leader-Follower entre DataNodes

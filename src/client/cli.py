@@ -3,7 +3,8 @@ import argparse
 import os
 import sys
 import time
-from typing import List, Dict, Optional
+import datetime
+from typing import List, Dict, Optional, Tuple
 
 from src.client.dfs_client import DFSClient
 
@@ -54,8 +55,12 @@ class DFSCLI:
                     self._handle_ls(args)
                 elif command == "mkdir":
                     self._handle_mkdir(args)
+                elif command == "rmdir":
+                    self._handle_rmdir(args)
                 elif command == "cd":
                     self._handle_cd(args)
+                elif command == "pwd":
+                    print(f"Directorio actual: {self.current_dir}")
                 else:
                     print(f"Comando desconocido: {command}")
                     print("Escribe 'help' para ver los comandos disponibles.")
@@ -70,13 +75,20 @@ class DFSCLI:
         """
         help_text = """
 Comandos disponibles:
-  put <archivo_local> <ruta_dfs>  - Sube un archivo al DFS
-  get <ruta_dfs> <archivo_local>  - Descarga un archivo del DFS
-  ls [ruta]                       - Lista el contenido de un directorio
-  mkdir <ruta>                    - Crea un nuevo directorio
-  cd <ruta>                       - Cambia el directorio actual
-  help                            - Muestra esta ayuda
-  exit, quit                      - Sale del CLI
+  put <archivo_local> <ruta_dfs> [--workers=N]  - Sube un archivo al DFS
+  get <ruta_dfs> <archivo_local> [--workers=N]  - Descarga un archivo del DFS
+  ls [ruta] [-l]                               - Lista el contenido de un directorio
+  mkdir <ruta> [-p]                            - Crea un nuevo directorio
+  rmdir <ruta>                                 - Elimina un directorio vacío
+  cd <ruta>                                    - Cambia el directorio actual
+  pwd                                          - Muestra el directorio actual
+  help                                         - Muestra esta ayuda
+  exit, quit                                   - Sale del CLI
+
+Opciones:
+  --workers=N  - Número de trabajadores para operaciones paralelas (1-16)
+  -l           - Formato largo para listar directorios
+  -p           - Crear directorios padres si no existen
 """
         print(help_text)
     
@@ -228,9 +240,17 @@ Comandos disponibles:
         Maneja el comando ls para listar directorios.
         
         Args:
-            args: Argumentos del comando [ruta]
+            args: Argumentos del comando [ruta] [-l]
         """
-        path = args[0] if args else self.current_dir
+        # Procesar argumentos
+        path = self.current_dir
+        long_format = False
+        
+        for arg in args:
+            if arg == '-l':
+                long_format = True
+            elif not arg.startswith('-'):
+                path = arg
         
         # Manejar rutas relativas
         if not path.startswith('/'):
@@ -240,7 +260,7 @@ Comandos disponibles:
             directory_info = self.client.namenode_client.list_directory(path)
             
             if not directory_info:
-                print(f"El directorio {path} no existe")
+                print(f"Error: El directorio {path} no existe")
                 return
             
             contents = directory_info.get('contents', [])
@@ -249,31 +269,197 @@ Comandos disponibles:
                 print(f"El directorio {path} está vacío")
                 return
             
-            # Formatear la salida
-            print(f"Contenido de {path}:")
-            print(f"{'Nombre':<30} {'Tipo':<10} {'Tamaño':<10}")
-            print("-" * 50)
+            # Ordenar contenido: primero directorios, luego archivos, ambos alfabéticamente
+            contents.sort(key=lambda x: (0 if x.get('type') == 'directory' else 1, x.get('name', '')))
             
-            for item in contents:
-                item_type = item.get('type', 'desconocido')
-                item_name = item.get('name', 'sin nombre')
-                item_size = item.get('size', 0)
-                
-                size_str = f"{item_size} bytes" if item_type == 'file' else ""
-                print(f"{item_name:<30} {item_type:<10} {size_str:<10}")
+            # Formatear la salida
+            if long_format:
+                self._print_long_format(path, contents)
+            else:
+                self._print_short_format(path, contents)
         
         except Exception as e:
             print(f"Error al listar el directorio {path}: {e}")
+    
+    def _print_short_format(self, path: str, contents: List[Dict]):
+        """
+        Imprime el contenido de un directorio en formato corto.
+        """
+        print(f"Contenido de {path}:")
+        
+        # Calcular el ancho máximo para formatear en columnas
+        max_name_length = max([len(item.get('name', '')) for item in contents] + [10])
+        col_width = max_name_length + 4  # Añadir espacio extra
+        term_width = 80  # Ancho por defecto de la terminal
+        cols = max(1, term_width // col_width)
+        
+        # Imprimir en columnas
+        for i, item in enumerate(contents):
+            item_type = item.get('type', 'desconocido')
+            item_name = item.get('name', 'sin nombre')
+            
+            # Colorear según el tipo (directorios en azul, archivos en blanco)
+            if item_type == 'directory':
+                formatted_name = f"\033[1;34m{item_name}/\033[0m"  # Azul para directorios
+            else:
+                formatted_name = item_name
+            
+            # Imprimir en columnas
+            print(f"{formatted_name:{col_width}}", end='')
+            if (i + 1) % cols == 0 or i == len(contents) - 1:
+                print()  # Nueva línea al final de cada fila
+    
+    def _print_long_format(self, path: str, contents: List[Dict]):
+        """
+        Imprime el contenido de un directorio en formato largo.
+        """
+        print(f"Contenido de {path}:")
+        print(f"{'Tipo':<12} {'Tamaño':<10} {'Fecha Mod.':<20} {'Nombre'}")
+        print("-" * 80)
+        
+        for item in contents:
+            item_type = item.get('type', 'desconocido')
+            item_name = item.get('name', 'sin nombre')
+            item_size = item.get('size', 0)
+            item_modified = item.get('modified_at', None)
+            
+            # Formatear tamaño
+            if item_type == 'file':
+                size_str = self._format_size(item_size)
+            else:
+                size_str = "-"
+            
+            # Formatear fecha de modificación
+            if item_modified:
+                try:
+                    # Convertir timestamp a fecha legible
+                    date_str = datetime.datetime.fromtimestamp(item_modified).strftime('%Y-%m-%d %H:%M:%S')
+                except:
+                    date_str = "-"
+            else:
+                date_str = "-"
+            
+            # Colorear según el tipo
+            if item_type == 'directory':
+                type_str = "\033[1;34mDirectorio\033[0m"  # Azul para directorios
+                formatted_name = f"\033[1;34m{item_name}/\033[0m"  # Azul para directorios
+            else:
+                type_str = "Archivo"
+                formatted_name = item_name
+            
+            print(f"{type_str:<12} {size_str:<10} {date_str:<20} {formatted_name}")
     
     def _handle_mkdir(self, args: List[str]):
         """
         Maneja el comando mkdir para crear directorios.
         
         Args:
+            args: Argumentos del comando [ruta] [-p]
+        """
+        if not args:
+            print("Uso: mkdir <ruta> [-p]")
+            return
+        
+        # Procesar argumentos
+        create_parents = False
+        path = None
+        
+        for arg in args:
+            if arg == '-p':
+                create_parents = True
+            elif not arg.startswith('-'):
+                path = arg
+        
+        if not path:
+            print("Error: Debe especificar una ruta")
+            return
+        
+        # Manejar rutas relativas
+        if not path.startswith('/'):
+            path = self._resolve_path(path)
+        
+        try:
+            if create_parents:
+                # Crear directorios padres recursivamente
+                self._create_directory_recursive(path)
+                print(f"Directorio {path} y sus padres creados exitosamente")
+            else:
+                # Verificar que el directorio padre existe
+                parent_dir = os.path.dirname(path)
+                if parent_dir != '/' and parent_dir:
+                    parent_info = self.client.namenode_client.list_directory(parent_dir)
+                    if not parent_info:
+                        print(f"Error: El directorio padre {parent_dir} no existe")
+                        print("Use 'mkdir -p' para crear los directorios padres automáticamente")
+                        return
+                
+                # Obtener el nombre del directorio
+                dir_name = os.path.basename(path)
+                
+                # Crear el directorio
+                directory = {
+                    'name': dir_name,
+                    'path': path,
+                    'type': 'directory'
+                }
+                
+                self.client.namenode_client.create_directory(directory)
+                print(f"Directorio {path} creado exitosamente")
+        
+        except Exception as e:
+            print(f"Error al crear el directorio {path}: {e}")
+    
+    def _create_directory_recursive(self, path: str) -> bool:
+        """
+        Crea un directorio y todos sus directorios padres si no existen.
+        
+        Args:
+            path: Ruta del directorio a crear
+            
+        Returns:
+            True si se creó exitosamente, False en caso contrario
+        """
+        # Caso base: directorio raíz
+        if path == '/':
+            return True
+        
+        # Verificar si el directorio ya existe
+        try:
+            dir_info = self.client.namenode_client.list_directory(path)
+            if dir_info:
+                return True  # El directorio ya existe
+        except Exception:
+            pass  # Ignorar errores, intentaremos crear el directorio
+        
+        # Crear el directorio padre recursivamente
+        parent_dir = os.path.dirname(path)
+        if parent_dir and parent_dir != path:
+            if not self._create_directory_recursive(parent_dir):
+                return False
+        
+        # Crear el directorio actual
+        try:
+            dir_name = os.path.basename(path)
+            directory = {
+                'name': dir_name,
+                'path': path,
+                'type': 'directory'
+            }
+            self.client.namenode_client.create_directory(directory)
+            return True
+        except Exception as e:
+            print(f"Error al crear el directorio {path}: {e}")
+            return False
+    
+    def _handle_rmdir(self, args: List[str]):
+        """
+        Maneja el comando rmdir para eliminar directorios vacíos.
+        
+        Args:
             args: Argumentos del comando [ruta]
         """
         if not args:
-            print("Uso: mkdir <ruta>")
+            print("Uso: rmdir <ruta>")
             return
         
         path = args[0]
@@ -282,21 +468,36 @@ Comandos disponibles:
         if not path.startswith('/'):
             path = self._resolve_path(path)
         
-        # Obtener el nombre del directorio
-        dir_name = os.path.basename(path)
+        # Verificar que no se intente eliminar el directorio raíz
+        if path == '/':
+            print("Error: No se puede eliminar el directorio raíz")
+            return
         
         try:
-            directory = {
-                'name': dir_name,
-                'path': path,
-                'type': 'directory'
-            }
+            # Verificar que el directorio existe
+            dir_info = self.client.namenode_client.list_directory(path)
             
-            self.client.namenode_client.create_directory(directory)
-            print(f"Directorio {path} creado exitosamente")
+            if not dir_info:
+                print(f"Error: El directorio {path} no existe")
+                return
+            
+            # Verificar que el directorio está vacío
+            contents = dir_info.get('contents', [])
+            if contents:
+                print(f"Error: El directorio {path} no está vacío")
+                return
+            
+            # Eliminar el directorio
+            self.client.namenode_client.delete_directory(path)
+            print(f"Directorio {path} eliminado exitosamente")
+            
+            # Si estamos en el directorio que se eliminó, volver al directorio padre
+            if self.current_dir.startswith(path):
+                self.current_dir = os.path.dirname(path) or "/"
+                print(f"Directorio actual cambiado a: {self.current_dir}")
         
         except Exception as e:
-            print(f"Error al crear el directorio {path}: {e}")
+            print(f"Error al eliminar el directorio {path}: {e}")
     
     def _handle_cd(self, args: List[str]):
         """
