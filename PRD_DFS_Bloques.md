@@ -70,16 +70,16 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
   - [  ] Verificación de integridad de bloques
 
 ### Cliente CLI
-- [  ] **Operaciones de Archivos**
-  - [  ] `put`: Dividir archivo en bloques y coordinar subida
-  - [  ] `get`: Obtener ubicación de bloques y reconstruir archivo
+- [✓] **Operaciones de Archivos**
+  - [✓] `put`: Dividir archivo en bloques y coordinar subida
+  - [✓] `get`: Obtener ubicación de bloques y reconstruir archivo
   - [  ] `rm`: Eliminar archivo y sus bloques asociados
 
-- [  ] **Operaciones de Directorio**
-  - [  ] `ls`: Listar contenido de directorio
-  - [  ] `cd`: Cambiar directorio actual
-  - [  ] `mkdir`: Crear directorio
-  - [  ] `rmdir`: Eliminar directorio
+- [✓] **Operaciones de Directorio**
+  - [✓] `ls`: Listar contenido de directorio
+  - [✓] `cd`: Cambiar directorio actual
+  - [✓] `mkdir`: Crear directorio
+  - [✓] `rmdir`: Eliminar directorio
 
 - [✓] **Comunicación**
   - [✓] Interacción con NameNode vía REST API

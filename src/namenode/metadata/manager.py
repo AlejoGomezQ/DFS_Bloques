@@ -20,9 +20,11 @@ class MetadataManager:
         self._ensure_root_directory_exists()
     
     def _ensure_root_directory_exists(self):
-        root = self.db.get_file_by_path("")
+        # Verificar si existe el directorio raíz con path "/"
+        root = self.db.get_file_by_path("/")
         if not root:
-            self.db.create_file(name="", path="", file_type=FileType.DIRECTORY)
+            # Crear el directorio raíz
+            self.db.create_file(name="/", path="/", file_type=FileType.DIRECTORY)
     
     # Métodos para gestionar DataNodes
     
