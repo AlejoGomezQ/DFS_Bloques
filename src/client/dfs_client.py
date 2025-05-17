@@ -105,7 +105,8 @@ class DFSClient:
                         'block_id': block['block_id'],
                         'file_id': file_id,
                         'size': block['size'],
-                        'checksum': block['checksum']
+                        'checksum': block['checksum'],
+                        'locations': []  # Lista vacía inicialmente, se llenará al subir el bloque
                     }
                 )
             
@@ -209,23 +210,14 @@ class DFSClient:
             
     def _format_size(self, size_bytes: int) -> str:
         """
-        Formatea un tamaño en bytes a una representación legible.
         
-        Args:
-            size_bytes: Tamaño en bytes
-            
-        Returns:
-            String formateado (ej: "4.2 MB")
-        """
-        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
-            if size_bytes < 1024 or unit == 'TB':
-                return f"{size_bytes:.2f} {unit}"
-            size_bytes /= 1024
-    
-    def get_file(self, dfs_path: str, local_path: str, max_workers: int = 4) -> bool:
-        """
-        Descarga un archivo del sistema de archivos distribuido.
+        # Descargar bloques en paralelo con barra de progreso
+        print(f"Descargando bloques...")
         
+        # Inicializar variables para la barra de progreso
+        downloaded_blocks = 0
+        total_blocks = len(blocks_info)
+        progress_bar_width = 50
         Args:
             dfs_path: Ruta del archivo en el DFS
             local_path: Ruta local donde se guardará el archivo

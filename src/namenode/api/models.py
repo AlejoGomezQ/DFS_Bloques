@@ -51,7 +51,7 @@ class BlockInfo(BaseModel):
     block_id: str
     file_id: str
     size: int  # in bytes
-    locations: List[BlockLocation]
+    locations: List[BlockLocation] = []
     checksum: Optional[str] = None
 
 

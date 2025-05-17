@@ -400,25 +400,28 @@ async def list_directory(path: str = Path(..., description="The path of the dire
     
     return manager.list_directory(path)
 
-@directories_router.delete("/{path:path}", status_code=204)
+@directories_router.delete("/{path:path}", status_code=200)
 async def delete_directory(path: str = Path(..., description="The path of the directory to delete"), manager: MetadataManager = Depends(get_metadata_manager)):
     """
-    Delete a directory and all its contents.
+    Delete an empty directory.
     """
     # Verificar si el directorio existe
     dir_info = manager.get_file_by_path(path)
     if not dir_info:
         raise HTTPException(status_code=404, detail=f"Directory not found at path: {path}")
     
-    if dir_info.type != FileType.DIRECTORY:
+    # Verificar que es un directorio
+    if dir_info.get('type') != 'directory':
         raise HTTPException(status_code=400, detail=f"Path is not a directory: {path}")
     
     # No permitir eliminar el directorio raíz
-    if path == "" or path == "/":
+    if path == "/" or path == "":
         raise HTTPException(status_code=400, detail="Cannot delete root directory")
     
-    success = manager.delete_directory(path)
-    if not success:
-        raise HTTPException(status_code=500, detail="Failed to delete directory")
+    # Intentar eliminar el directorio
+    result = manager.delete_directory(path)
     
-    return None
+    if result > 0:
+        return {"success": True, "message": f"Directory {path} deleted successfully"}
+    else:
+        raise HTTPException(status_code=400, detail=f"Could not delete directory {path}. It may not be empty.")
