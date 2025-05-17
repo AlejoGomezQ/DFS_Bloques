@@ -2,6 +2,7 @@
 import argparse
 import os
 import sys
+import time
 from typing import List, Dict, Optional
 
 from src.client.dfs_client import DFSClient
@@ -86,26 +87,71 @@ Comandos disponibles:
         Args:
             args: Argumentos del comando [archivo_local, ruta_dfs]
         """
-        if len(args) != 2:
-            print("Uso: put <archivo_local> <ruta_dfs>")
+        if len(args) < 2:
+            print("Uso: put <archivo_local> <ruta_dfs> [--workers=N]")
             return
         
-        local_path, dfs_path = args
+        # Procesar argumentos
+        local_path = args[0]
+        dfs_path = args[1]
+        max_workers = 4  # Valor por defecto
+        
+        # Procesar argumentos opcionales
+        for arg in args[2:]:
+            if arg.startswith("--workers="):
+                try:
+                    max_workers = int(arg.split("=")[1])
+                    if max_workers < 1:
+                        max_workers = 1
+                    elif max_workers > 16:
+                        max_workers = 16
+                except (ValueError, IndexError):
+                    print("Advertencia: Valor inválido para workers, usando valor por defecto (4)")
+                    max_workers = 4
         
         # Convertir rutas relativas a absolutas para el archivo local
         local_path = os.path.abspath(local_path)
+        
+        # Verificar que el archivo existe
+        if not os.path.exists(local_path):
+            print(f"Error: El archivo local {local_path} no existe")
+            return
+        elif not os.path.isfile(local_path):
+            print(f"Error: {local_path} no es un archivo")
+            return
         
         # Manejar rutas relativas en el DFS
         if not dfs_path.startswith('/'):
             dfs_path = self._resolve_path(dfs_path)
         
-        print(f"Subiendo {local_path} a {dfs_path}...")
-        success = self.client.put_file(local_path, dfs_path)
+        # Mostrar información del archivo
+        file_size = os.path.getsize(local_path)
+        print(f"\nIniciando subida de archivo:")
+        print(f"  Local: {local_path}")
+        print(f"  DFS:   {dfs_path}")
+        print(f"  Tamaño: {self._format_size(file_size)}")
+        print(f"  Workers: {max_workers}")
+        print("-" * 50)
         
+        # Iniciar la subida
+        start_time = time.time()
+        success = self.client.put_file(local_path, dfs_path, max_workers)
+        end_time = time.time()
+        
+        print("-" * 50)
         if success:
-            print(f"Archivo subido exitosamente a {dfs_path}")
+            print(f"Operación completada en {end_time - start_time:.2f} segundos")
         else:
-            print("Error al subir el archivo")
+            print("La operación falló o se completó con errores")
+    
+    def _format_size(self, size_bytes: int) -> str:
+        """
+        Formatea un tamaño en bytes a una representación legible.
+        """
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size_bytes < 1024 or unit == 'TB':
+                return f"{size_bytes:.2f} {unit}"
+            size_bytes /= 1024
     
     def _handle_get(self, args: List[str]):
         """

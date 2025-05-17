@@ -22,7 +22,7 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 
 ### Fase 3: Cliente y Operaciones de Archivos
 - [✓] 3.1 Desarrollar cliente CLI básico
-- [  ] 3.2 Implementar operación PUT (subir archivo)
+- [✓] 3.2 Implementar operación PUT (subir archivo)
 - [  ] 3.3 Implementar operación GET (descargar archivo)
 - [  ] 3.4 Implementar operaciones de directorio (ls, mkdir)
 

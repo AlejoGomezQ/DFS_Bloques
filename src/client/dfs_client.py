@@ -1,7 +1,9 @@
 import os
 import uuid
-from typing import List, Dict, Optional, BinaryIO, Tuple
 import time
+import sys
+from typing import List, Dict, Optional, BinaryIO, Tuple
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from src.client.namenode_client import NameNodeClient
 from src.client.datanode_client import DataNodeClient
@@ -30,13 +32,14 @@ class DFSClient:
         
         self.file_splitter = FileSplitter(block_size)
     
-    def put_file(self, local_path: str, dfs_path: str) -> bool:
+    def put_file(self, local_path: str, dfs_path: str, max_workers: int = 4) -> bool:
         """
         Sube un archivo al sistema de archivos distribuido.
         
         Args:
             local_path: Ruta local del archivo a subir
             dfs_path: Ruta destino en el DFS
+            max_workers: Número máximo de hilos para subir bloques en paralelo
             
         Returns:
             True si la operación fue exitosa, False en caso contrario
@@ -56,16 +59,27 @@ class DFSClient:
                 print(f"Error: No se pudo crear el directorio padre {parent_dir}")
                 return False
             
+            # Obtener el tamaño del archivo para la barra de progreso
+            file_size = os.path.getsize(local_path)
+            print(f"Archivo: {file_name} ({self._format_size(file_size)})")
+            
             # Dividir el archivo en bloques
-            print(f"Dividiendo el archivo {local_path} en bloques...")
+            print(f"Dividiendo el archivo en bloques...")
+            start_time = time.time()
             blocks = self.file_splitter.split_file(local_path)
+            print(f"Archivo dividido en {len(blocks)} bloques en {time.time() - start_time:.2f} segundos")
             
             # Distribuir los bloques entre los DataNodes disponibles
-            print(f"Seleccionando DataNodes para {len(blocks)} bloques...")
+            print(f"Seleccionando DataNodes para los bloques...")
             block_distribution = self.block_distributor.distribute_blocks(blocks)
             
+            # Verificar que todos los bloques tienen DataNodes asignados
+            blocks_without_nodes = [b['block_id'] for b in blocks if b['block_id'] not in block_distribution]
+            if blocks_without_nodes:
+                print(f"Error: {len(blocks_without_nodes)} bloques no tienen DataNodes asignados")
+                return False
+            
             # Crear el archivo en el NameNode
-            file_size = os.path.getsize(local_path)
             file_metadata = {
                 'name': file_name,
                 'path': dfs_path,
@@ -73,7 +87,7 @@ class DFSClient:
                 'size': file_size
             }
             
-            print(f"Registrando archivo {dfs_path} en el NameNode...")
+            print(f"Registrando archivo en el NameNode...")
             file_info = self.namenode_client.create_file(file_metadata)
             file_id = file_info.get('file_id')
             
@@ -81,56 +95,132 @@ class DFSClient:
                 print("Error: No se pudo crear el archivo en el NameNode")
                 return False
             
-            # Subir cada bloque a los DataNodes seleccionados
-            print(f"Subiendo bloques a los DataNodes...")
+            # Registrar todos los bloques en el NameNode
+            print(f"Registrando {len(blocks)} bloques en el NameNode...")
             for block in blocks:
-                block_id = block['block_id']
-                
-                if block_id not in block_distribution:
-                    print(f"Error: No hay DataNodes disponibles para el bloque {block_id}")
-                    continue
-                
-                # Registrar el bloque en el NameNode
                 self.namenode_client._make_request(
                     'post', 
                     '/blocks/', 
                     {
-                        'block_id': block_id,
+                        'block_id': block['block_id'],
                         'file_id': file_id,
                         'size': block['size'],
                         'checksum': block['checksum']
                     }
                 )
-                
-                # Subir el bloque a cada DataNode seleccionado
+            
+            # Subir bloques en paralelo con barra de progreso
+            print(f"Subiendo bloques a los DataNodes...")
+            
+            # Inicializar variables para la barra de progreso
+            uploaded_blocks = 0
+            total_blocks = len(blocks)
+            progress_bar_width = 50
+            
+            # Función para subir un bloque a un DataNode
+            def upload_block_to_datanode(block, node_info):
+                try:
+                    with DataNodeClient(node_info['hostname'], node_info['port']) as datanode:
+                        success = datanode.store_block(block['block_id'], block['data'])
+                        
+                        if success:
+                            # Registrar la ubicación del bloque en el NameNode
+                            self.namenode_client._make_request(
+                                'post',
+                                f'/blocks/{block["block_id"]}/locations',
+                                {
+                                    'datanode_id': node_info['node_id'],
+                                    'is_leader': node_info.get('is_leader', False)
+                                }
+                            )
+                            return True, block['block_id'], node_info['node_id']
+                        else:
+                            return False, block['block_id'], node_info['node_id']
+                except Exception as e:
+                    return False, block['block_id'], node_info['node_id']
+            
+            # Lista de tareas para subir bloques
+            upload_tasks = []
+            for block in blocks:
+                block_id = block['block_id']
                 for node_info in block_distribution[block_id]:
-                    try:
-                        # Conectar con el DataNode
-                        with DataNodeClient(node_info['hostname'], node_info['port']) as datanode:
-                            # Subir el bloque
-                            success = datanode.store_block(block_id, block['data'])
-                            
-                            if success:
-                                # Registrar la ubicación del bloque en el NameNode
-                                self.namenode_client._make_request(
-                                    'post',
-                                    f'/blocks/{block_id}/locations',
-                                    {
-                                        'datanode_id': node_info['node_id'],
-                                        'is_leader': node_info.get('is_leader', False)
-                                    }
-                                )
-                            else:
-                                print(f"Error al subir el bloque {block_id} al DataNode {node_info['node_id']}")
-                    except Exception as e:
-                        print(f"Error al comunicarse con el DataNode {node_info['node_id']}: {e}")
+                    upload_tasks.append((block, node_info))
+            
+            # Subir bloques en paralelo
+            successful_uploads = 0
+            failed_uploads = 0
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(upload_block_to_datanode, block, node_info) 
+                          for block, node_info in upload_tasks]
+                
+                for future in as_completed(futures):
+                    success, block_id, node_id = future.result()
+                    
+                    if success:
+                        successful_uploads += 1
+                    else:
+                        failed_uploads += 1
+                        print(f"\nError al subir el bloque {block_id} al DataNode {node_id}")
+                    
+                    # Actualizar la barra de progreso
+                    uploaded_blocks += 1
+                    progress = uploaded_blocks / len(upload_tasks)
+                    filled_length = int(progress_bar_width * progress)
+                    bar = '█' * filled_length + '-' * (progress_bar_width - filled_length)
+                    percentage = progress * 100
+                    
+                    sys.stdout.write(f"\r[{bar}] {percentage:.1f}% ({uploaded_blocks}/{len(upload_tasks)})")
+                    sys.stdout.flush()
+            
+            print("\n")
+            
+            # Verificar que al menos una copia de cada bloque se subió correctamente
+            blocks_info = self.namenode_client.get_file_blocks(file_id)
+            missing_blocks = []
+            
+            for block in blocks:
+                block_id = block['block_id']
+                block_info = next((b for b in blocks_info if b.get('block_id') == block_id), None)
+                
+                if not block_info or not block_info.get('locations'):
+                    missing_blocks.append(block_id)
+            
+            if missing_blocks:
+                print(f"Advertencia: {len(missing_blocks)} bloques no se pudieron subir correctamente")
+                print("El archivo podría no estar completo en el DFS")
+                return False
+            
+            # Calcular estadísticas
+            end_time = time.time()
+            total_time = end_time - start_time
+            speed = file_size / total_time if total_time > 0 else 0
             
             print(f"Archivo {dfs_path} subido exitosamente")
+            print(f"Tiempo total: {total_time:.2f} segundos")
+            print(f"Velocidad: {self._format_size(speed)}/s")
+            print(f"Bloques: {len(blocks)} ({successful_uploads} subidas exitosas, {failed_uploads} fallidas)")
+            
             return True
             
         except Exception as e:
             print(f"Error al subir el archivo: {e}")
             return False
+            
+    def _format_size(self, size_bytes: int) -> str:
+        """
+        Formatea un tamaño en bytes a una representación legible.
+        
+        Args:
+            size_bytes: Tamaño en bytes
+            
+        Returns:
+            String formateado (ej: "4.2 MB")
+        """
+        for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+            if size_bytes < 1024 or unit == 'TB':
+                return f"{size_bytes:.2f} {unit}"
+            size_bytes /= 1024
     
     def get_file(self, dfs_path: str, local_path: str) -> bool:
         """
