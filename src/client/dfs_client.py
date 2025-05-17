@@ -222,19 +222,23 @@ class DFSClient:
                 return f"{size_bytes:.2f} {unit}"
             size_bytes /= 1024
     
-    def get_file(self, dfs_path: str, local_path: str) -> bool:
+    def get_file(self, dfs_path: str, local_path: str, max_workers: int = 4) -> bool:
         """
         Descarga un archivo del sistema de archivos distribuido.
         
         Args:
             dfs_path: Ruta del archivo en el DFS
             local_path: Ruta local donde se guardará el archivo
+            max_workers: Número máximo de hilos para descargar bloques en paralelo
             
         Returns:
             True si la operación fue exitosa, False en caso contrario
         """
         try:
+            start_time = time.time()
+            
             # Obtener la información del archivo
+            print(f"Obteniendo información del archivo {dfs_path}...")
             file_info = self.namenode_client.get_file_by_path(dfs_path)
             
             if not file_info:
@@ -242,32 +246,37 @@ class DFSClient:
                 return False
             
             file_id = file_info.get('file_id')
+            file_size = file_info.get('size', 0)
+            file_name = file_info.get('name', os.path.basename(dfs_path))
+            
+            print(f"Archivo: {file_name} ({self._format_size(file_size)})")
             
             # Obtener la información de los bloques
+            print(f"Obteniendo información de bloques...")
             blocks_info = self.namenode_client.get_file_blocks(file_id)
             
             if not blocks_info:
                 print(f"Error: No se encontraron bloques para el archivo {dfs_path}")
                 return False
             
+            print(f"El archivo está dividido en {len(blocks_info)} bloques")
+            
             # Crear un directorio temporal para almacenar los bloques
             temp_dir = os.path.join(os.path.dirname(local_path), f".tmp_{uuid.uuid4()}")
             os.makedirs(temp_dir, exist_ok=True)
             
-            # Descargar cada bloque
-            blocks = []
-            
-            for block_info in blocks_info:
+            # Función para descargar un bloque
+            def download_block(block_info):
                 block_id = block_info.get('block_id')
                 block_locations = block_info.get('locations', [])
+                block_size = block_info.get('size', 0)
+                block_checksum = block_info.get('checksum')
+                block_index = blocks_info.index(block_info)
                 
                 if not block_locations:
-                    print(f"Error: No hay ubicaciones disponibles para el bloque {block_id}")
-                    continue
+                    return False, block_id, None, block_index, "No hay ubicaciones disponibles"
                 
                 # Intentar descargar el bloque de cualquier DataNode disponible
-                block_data = None
-                
                 for location in block_locations:
                     try:
                         datanode_info = self.namenode_client.get_datanode(location.get('datanode_id'))
@@ -281,40 +290,84 @@ class DFSClient:
                             block_data = datanode.retrieve_block(block_id)
                             
                             if block_data:
-                                break
+                                # Verificar el checksum si está disponible
+                                if block_checksum:
+                                    calculated_checksum = self.file_splitter._calculate_checksum(block_data)
+                                    if calculated_checksum != block_checksum:
+                                        continue  # Checksum no coincide, probar otro DataNode
+                                
+                                # Guardar el bloque temporalmente
+                                block_path = os.path.join(temp_dir, block_id)
+                                with open(block_path, 'wb') as f:
+                                    f.write(block_data)
+                                
+                                return True, block_id, block_data, block_index, None
                     except Exception as e:
-                        print(f"Error al descargar el bloque {block_id} del DataNode {location.get('datanode_id')}: {e}")
+                        continue  # Intentar con el siguiente DataNode
                 
-                if not block_data:
-                    print(f"Error: No se pudo descargar el bloque {block_id} de ningún DataNode")
-                    continue
-                
-                # Guardar el bloque temporalmente
-                block_path = os.path.join(temp_dir, block_id)
-                with open(block_path, 'wb') as f:
-                    f.write(block_data)
-                
-                # Añadir la información del bloque para reconstruir el archivo
-                blocks.append({
-                    'block_id': block_id,
-                    'data': block_data,
-                    'index': blocks_info.index(block_info),
-                    'size': block_info.get('size', 0),
-                    'checksum': block_info.get('checksum')
-                })
+                return False, block_id, None, block_index, "No se pudo descargar de ningún DataNode"
             
-            # Reconstruir el archivo
-            if not blocks:
-                print(f"Error: No se pudieron descargar los bloques del archivo {dfs_path}")
-                return False
+            # Descargar bloques en paralelo con barra de progreso
+            print(f"Descargando bloques...")
             
-            # Ordenar los bloques por índice
-            blocks.sort(key=lambda x: x['index'])
+            # Inicializar variables para la barra de progreso
+            downloaded_blocks = 0
+            total_blocks = len(blocks_info)
+            progress_bar_width = 50
+            
+            # Lista para almacenar los bloques descargados
+            blocks = [None] * total_blocks
+            
+            # Descargar bloques en paralelo
+            successful_downloads = 0
+            failed_downloads = 0
+            
+            with ThreadPoolExecutor(max_workers=max_workers) as executor:
+                futures = [executor.submit(download_block, block_info) for block_info in blocks_info]
+                
+                for future in as_completed(futures):
+                    success, block_id, block_data, block_index, error_msg = future.result()
+                    
+                    if success:
+                        successful_downloads += 1
+                        blocks[block_index] = {
+                            'block_id': block_id,
+                            'data': block_data,
+                            'index': block_index,
+                            'size': len(block_data) if block_data else 0
+                        }
+                    else:
+                        failed_downloads += 1
+                        print(f"\nError al descargar el bloque {block_id}: {error_msg}")
+                    
+                    # Actualizar la barra de progreso
+                    downloaded_blocks += 1
+                    progress = downloaded_blocks / total_blocks
+                    filled_length = int(progress_bar_width * progress)
+                    bar = '█' * filled_length + '-' * (progress_bar_width - filled_length)
+                    percentage = progress * 100
+                    
+                    sys.stdout.write(f"\r[{bar}] {percentage:.1f}% ({downloaded_blocks}/{total_blocks})")
+                    sys.stdout.flush()
+            
+            print("\n")
+            
+            # Eliminar los elementos None de la lista (bloques que no se pudieron descargar)
+            blocks = [b for b in blocks if b is not None]
+            
+            # Verificar que se descargaron todos los bloques
+            if len(blocks) != total_blocks:
+                print(f"Advertencia: Solo se pudieron descargar {len(blocks)} de {total_blocks} bloques")
+                print("El archivo podría estar incompleto o corrupto")
+                if len(blocks) == 0:
+                    print("No se pudo descargar ningún bloque, abortando operación")
+                    return False
             
             # Crear el directorio destino si no existe
             os.makedirs(os.path.dirname(os.path.abspath(local_path)), exist_ok=True)
             
             # Escribir el archivo
+            print(f"Reconstruyendo archivo...")
             with open(local_path, 'wb') as f:
                 for block in blocks:
                     f.write(block['data'])
@@ -327,7 +380,17 @@ class DFSClient:
             
             os.rmdir(temp_dir)
             
-            print(f"Archivo {dfs_path} descargado exitosamente a {local_path}")
+            # Calcular estadísticas
+            end_time = time.time()
+            total_time = end_time - start_time
+            downloaded_size = os.path.getsize(local_path)
+            speed = downloaded_size / total_time if total_time > 0 else 0
+            
+            print(f"Archivo descargado exitosamente a {local_path}")
+            print(f"Tiempo total: {total_time:.2f} segundos")
+            print(f"Velocidad: {self._format_size(speed)}/s")
+            print(f"Bloques: {len(blocks)}/{total_blocks} ({successful_downloads} descargas exitosas, {failed_downloads} fallidas)")
+            
             return True
             
         except Exception as e:

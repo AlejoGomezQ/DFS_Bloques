@@ -160,11 +160,27 @@ Comandos disponibles:
         Args:
             args: Argumentos del comando [ruta_dfs, archivo_local]
         """
-        if len(args) != 2:
-            print("Uso: get <ruta_dfs> <archivo_local>")
+        if len(args) < 2:
+            print("Uso: get <ruta_dfs> <archivo_local> [--workers=N]")
             return
         
-        dfs_path, local_path = args
+        # Procesar argumentos
+        dfs_path = args[0]
+        local_path = args[1]
+        max_workers = 4  # Valor por defecto
+        
+        # Procesar argumentos opcionales
+        for arg in args[2:]:
+            if arg.startswith("--workers="):
+                try:
+                    max_workers = int(arg.split("=")[1])
+                    if max_workers < 1:
+                        max_workers = 1
+                    elif max_workers > 16:
+                        max_workers = 16
+                except (ValueError, IndexError):
+                    print("Advertencia: Valor inválido para workers, usando valor por defecto (4)")
+                    max_workers = 4
         
         # Manejar rutas relativas en el DFS
         if not dfs_path.startswith('/'):
@@ -173,13 +189,39 @@ Comandos disponibles:
         # Convertir rutas relativas a absolutas para el archivo local
         local_path = os.path.abspath(local_path)
         
-        print(f"Descargando {dfs_path} a {local_path}...")
-        success = self.client.get_file(dfs_path, local_path)
+        # Verificar si el directorio destino existe
+        dest_dir = os.path.dirname(local_path)
+        if not os.path.exists(dest_dir):
+            try:
+                os.makedirs(dest_dir, exist_ok=True)
+                print(f"Directorio destino creado: {dest_dir}")
+            except Exception as e:
+                print(f"Error al crear el directorio destino: {e}")
+                return
         
+        # Verificar si el archivo destino ya existe
+        if os.path.exists(local_path):
+            overwrite = input(f"El archivo {local_path} ya existe. ¿Desea sobrescribirlo? (s/n): ").lower()
+            if overwrite != 's':
+                print("Operación cancelada")
+                return
+        
+        print(f"\nIniciando descarga de archivo:")
+        print(f"  DFS:   {dfs_path}")
+        print(f"  Local: {local_path}")
+        print(f"  Workers: {max_workers}")
+        print("-" * 50)
+        
+        # Iniciar la descarga
+        start_time = time.time()
+        success = self.client.get_file(dfs_path, local_path, max_workers)
+        end_time = time.time()
+        
+        print("-" * 50)
         if success:
-            print(f"Archivo descargado exitosamente a {local_path}")
+            print(f"Operación completada en {end_time - start_time:.2f} segundos")
         else:
-            print("Error al descargar el archivo")
+            print("La operación falló o se completó con errores")
     
     def _handle_ls(self, args: List[str]):
         """
