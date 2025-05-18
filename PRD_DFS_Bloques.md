@@ -30,7 +30,7 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 - [✓] 4.1 Implementar mecanismo de replicación Leader-Follower entre DataNodes
 - [✓] 4.2 Desarrollar detección de fallos en DataNodes
 - [✓] 4.3 Implementar re-replicación de bloques perdidos
-- [  ] 4.4 Desarrollar NameNode Follower para redundancia
+- [✓] 4.4 Desarrollar NameNode Follower para redundancia
 
 ### Fase 5: Refinamiento y Funcionalidades Adicionales
 - [  ] 5.1 Completar comandos CLI restantes (rm, rmdir, cd)
