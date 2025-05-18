@@ -27,8 +27,8 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 - [✓] 3.4 Implementar operaciones de directorio (ls, mkdir)
 
 ### Fase 4: Replicación y Tolerancia a Fallos
-- [  ] 4.1 Implementar mecanismo de replicación Leader-Follower entre DataNodes
-- [  ] 4.2 Desarrollar detección de fallos en DataNodes
+- [✓] 4.1 Implementar mecanismo de replicación Leader-Follower entre DataNodes
+- [✓] 4.2 Desarrollar detección de fallos en DataNodes
 - [  ] 4.3 Implementar re-replicación de bloques perdidos
 - [  ] 4.4 Desarrollar NameNode Follower para redundancia
 
@@ -65,9 +65,9 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
   - [✓] Servicio para reportar estado al NameNode
 
 - [  ] **Mecanismo Leader-Follower**
-  - [  ] Protocolo de replicación de bloques
-  - [  ] Gestión de roles (Leader/Follower) por bloque
-  - [  ] Verificación de integridad de bloques
+  - [✓] Protocolo de replicación de bloques
+  - [✓] Gestión de roles (Leader/Follower) por bloque
+  - [✓] Verificación de integridad de bloques
 
 ### Cliente CLI
 - [✓] **Operaciones de Archivos**

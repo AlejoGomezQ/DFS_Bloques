@@ -368,7 +368,16 @@ class MetadataDatabase:
         conn.commit()
         return cursor.rowcount > 0
     
-    def get_blocks_by_datanode(self, datanode_id: str) -> List[Dict[str, Any]]:
+    def get_blocks_by_datanode(self, node_id: str) -> List[Dict[str, Any]]:
+        """
+        Obtiene todos los bloques almacenados en un DataNode específico.
+        
+        Args:
+            node_id: ID del DataNode
+            
+        Returns:
+            Lista de diccionarios con información de los bloques
+        """
         conn = self.get_connection()
         cursor = conn.cursor()
         
@@ -377,9 +386,10 @@ class MetadataDatabase:
         FROM blocks b
         JOIN block_locations bl ON b.block_id = bl.block_id
         WHERE bl.datanode_id = ?
-        ''', (datanode_id,))
+        ''', (node_id,))
         
-        return [dict(row) for row in cursor.fetchall()]
+        rows = cursor.fetchall()
+        return [dict(row) for row in rows]
     
     def update_datanode_blocks_count(self, datanode_id: str) -> bool:
         conn = self.get_connection()

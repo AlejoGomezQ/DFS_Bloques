@@ -277,33 +277,26 @@ class MetadataManager:
             self.db.update_datanode_blocks_count(datanode_id)
         return success
     
-    def get_blocks_by_datanode(self, datanode_id: str) -> List[BlockInfo]:
-        blocks_data = self.db.get_blocks_by_datanode(datanode_id)
+    def get_blocks_by_datanode(self, node_id: str) -> List[BlockInfo]:
+        """
+        Obtiene todos los bloques almacenados en un DataNode específico.
         
-        result = []
-        for block_data in blocks_data:
-            block_id = block_data["block_id"]
-            locations = self.db.get_block_locations(block_id)
+        Args:
+            node_id: ID del DataNode
             
-            block_locations = [
-                BlockLocation(
-                    block_id=block_id,
-                    datanode_id=loc["datanode_id"],
-                    is_leader=loc["is_leader"]
-                )
-                for loc in locations
-            ]
-            
-            result.append(BlockInfo(
-                block_id=block_data["block_id"],
-                file_id=block_data["file_id"],
-                size=block_data["size"],
-                locations=block_locations,
-                checksum=block_data["checksum"]
-            ))
-        
-        return result
-        
+        Returns:
+            Lista de bloques almacenados en el DataNode
+        """
+        blocks = self.db.get_blocks_by_datanode(node_id)
+        return [
+            BlockInfo(
+                block_id=block["block_id"],
+                size=block["size"],
+                locations=block["locations"]
+            )
+            for block in blocks
+        ]
+    
     def update_block(self, block_id: str, **kwargs) -> bool:
         """Actualiza la información de un bloque en la base de datos.
         
