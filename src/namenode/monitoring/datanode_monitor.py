@@ -6,6 +6,7 @@ from typing import Dict, Optional, List
 
 from src.namenode.metadata.manager import MetadataManager
 from src.namenode.api.models import DataNodeStatus
+from src.namenode.replication.block_replicator import BlockReplicator
 
 class DataNodeMonitor:
     def __init__(self, metadata_manager: MetadataManager, heartbeat_timeout: int = 30):
@@ -21,6 +22,7 @@ class DataNodeMonitor:
         self.logger = logging.getLogger("DataNodeMonitor")
         self._stop_event = threading.Event()
         self._monitor_thread = None
+        self.block_replicator = BlockReplicator(metadata_manager)
     
     def start(self):
         """Inicia el hilo de monitoreo."""
@@ -83,11 +85,15 @@ class DataNodeMonitor:
             # Obtener los bloques almacenados en el DataNode
             blocks = self.metadata_manager.get_blocks_by_datanode(node_id)
             
-            # Registrar los bloques afectados para su posterior re-replicación
+            # Re-replicar cada bloque afectado
             for block in blocks:
-                self.logger.info(f"Block {block.block_id} needs re-replication due to DataNode {node_id} failure")
-                # Aquí se podría implementar la lógica para re-replicar los bloques
-                # Esto se implementará en la tarea 4.3
+                self.logger.info(f"Re-replicating block {block.block_id} due to DataNode {node_id} failure")
+                success = self.block_replicator.handle_block_replication(block.block_id, node_id)
+                
+                if success:
+                    self.logger.info(f"Block {block.block_id} successfully re-replicated")
+                else:
+                    self.logger.error(f"Failed to re-replicate block {block.block_id}")
         except Exception as e:
             self.logger.error(f"Error handling DataNode {node_id} failure: {str(e)}")
     

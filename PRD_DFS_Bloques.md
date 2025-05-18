@@ -29,7 +29,7 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 ### Fase 4: Replicación y Tolerancia a Fallos
 - [✓] 4.1 Implementar mecanismo de replicación Leader-Follower entre DataNodes
 - [✓] 4.2 Desarrollar detección de fallos en DataNodes
-- [  ] 4.3 Implementar re-replicación de bloques perdidos
+- [✓] 4.3 Implementar re-replicación de bloques perdidos
 - [  ] 4.4 Desarrollar NameNode Follower para redundancia
 
 ### Fase 5: Refinamiento y Funcionalidades Adicionales
