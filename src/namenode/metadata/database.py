@@ -431,3 +431,17 @@ class MetadataDatabase:
         file['blocks'] = blocks
         
         return file
+        
+    def list_all_files(self) -> List[Dict[str, Any]]:
+        """
+        Obtiene todos los archivos en la base de datos.
+        
+        Returns:
+            Lista de diccionarios con información de los archivos
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT * FROM files')
+        
+        return [dict(row) for row in cursor.fetchall()]
