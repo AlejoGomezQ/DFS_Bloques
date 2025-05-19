@@ -33,10 +33,9 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 - [✓] 4.4 Desarrollar NameNode Follower para redundancia
 
 ### Fase 5: Refinamiento y Funcionalidades Adicionales
-- [  ] 5.1 Completar comandos CLI restantes (rm, rmdir, cd)
-- [  ] 5.2 Optimizar rendimiento de transferencia de datos
-- [  ] 5.3 Implementar balanceo de carga entre DataNodes
-- [  ] 5.4 Añadir funcionalidades opcionales (autenticación básica)
+- [✓] 5.1 Completar comandos CLI restantes (rm, rmdir, cd)
+- [✓] 5.2 Optimizar rendimiento de transferencia de datos
+- [✓] 5.3 Implementar balanceo de carga entre DataNodes
 
 ## Componentes Esenciales
 

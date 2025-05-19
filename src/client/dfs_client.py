@@ -389,6 +389,92 @@ class DFSClient:
             print(f"Error al descargar el archivo: {e}")
             return False
     
+    def delete_directory_recursive(self, dfs_path: str) -> bool:
+        """
+        Elimina un directorio y todo su contenido recursivamente.
+        
+        Args:
+            dfs_path: Ruta del directorio en el DFS a eliminar
+            
+        Returns:
+            True si la operación fue exitosa, False en caso contrario
+        """
+        try:
+            # Verificar que el directorio existe
+            dir_info = self.namenode_client.list_directory(dfs_path)
+            if not dir_info:
+                print(f"Error: El directorio {dfs_path} no existe")
+                return False
+            
+            # Obtener el contenido del directorio
+            contents = dir_info.get('contents', [])
+            
+            # Eliminar recursivamente todos los archivos y subdirectorios
+            for item in contents:
+                item_path = f"{dfs_path}/{item['name']}" if dfs_path.endswith('/') else f"{dfs_path}/{item['name']}"
+                if item['type'] == 'directory':
+                    # Eliminar subdirectorio recursivamente
+                    if not self.delete_directory_recursive(item_path):
+                        return False
+                else:
+                    # Eliminar archivo
+                    if not self.delete_file(item_path, silent=True):
+                        return False
+            
+            # Finalmente, eliminar el directorio vacío
+            try:
+                self.namenode_client.delete_directory(dfs_path)
+                print(f"Directorio {dfs_path} eliminado exitosamente")
+                return True
+            except Exception as e:
+                print(f"Error al eliminar el directorio {dfs_path}: {e}")
+                return False
+            
+        except Exception as e:
+            print(f"Error al eliminar el directorio recursivamente: {e}")
+            return False
+    
+    def delete_file(self, dfs_path: str, silent: bool = False) -> bool:
+        """
+        Elimina un archivo del sistema de archivos distribuido.
+        
+        Args:
+            dfs_path: Ruta del archivo en el DFS a eliminar
+            silent: Si es True, no muestra mensajes de progreso
+            
+        Returns:
+            True si la operación fue exitosa, False en caso contrario
+        """
+        try:
+            # Verificar que el archivo existe
+            file_info = self.namenode_client.get_file_by_path(dfs_path)
+            if not file_info:
+                if not silent:
+                    print(f"Error: El archivo {dfs_path} no existe")
+                return False
+            
+            # Verificar que es un archivo y no un directorio
+            if file_info.get('type') == 'directory':
+                if not silent:
+                    print(f"Error: {dfs_path} es un directorio, use rmdir para eliminarlo")
+                return False
+            
+            # Obtener el ID del archivo
+            file_id = file_info.get('file_id')
+            
+            # Eliminar el archivo del NameNode
+            if not silent:
+                print(f"Eliminando archivo {dfs_path}...")
+            self.namenode_client.delete_file(file_id)
+            
+            if not silent:
+                print(f"Archivo {dfs_path} eliminado exitosamente")
+            return True
+            
+        except Exception as e:
+            print(f"Error al eliminar el archivo: {e}")
+            return False
+    
     def _ensure_directory_exists(self, directory_path: str) -> bool:
         """
         Asegura que un directorio existe en el DFS, creándolo si es necesario.
