@@ -56,32 +56,26 @@ class DataNodeServicer(datanode_pb2_grpc.DataNodeServiceServicer):
     def StoreBlock(self, request_iterator, context):
         """Almacena un bloque de datos enviado por el cliente."""
         block_id = None
-        block_data = bytearray()
+        data = bytearray()
+        total_size = 0
         
         try:
+            # Recopilar todos los chunks del bloque
             for chunk in request_iterator:
-                if block_id is None:
+                if not block_id:
                     block_id = chunk.block_id
-                block_data.extend(chunk.data)
+                    total_size = chunk.total_size
+                data.extend(chunk.data)
             
-            if block_id is None:
+            if not block_id:
                 return datanode_pb2.BlockResponse(
                     status=datanode_pb2.BlockResponse.ERROR,
-                    message="No block ID provided"
+                    message="No block ID provided",
+                    block_id=""
                 )
             
-            # Verificar si el bloque ya existe
-            if self.storage.block_exists(block_id):
-                self.logger.warning(f"Block {block_id} already exists, overwriting")
-            
-            # Almacenar el bloque
-            success = self.storage.store_block(block_id, block_data)
-            
-            # Calcular el checksum para verificar la integridad
-            checksum = None
-            if success:
-                checksum = self.storage.calculate_checksum(block_id)
-                self.logger.info(f"Stored block {block_id} with checksum {checksum}")
+            # Almacenar el bloque y obtener el checksum
+            success, checksum = self.storage.store_block(block_id, bytes(data))
             
             if success:
                 return datanode_pb2.BlockResponse(
@@ -143,7 +137,7 @@ class DataNodeServicer(datanode_pb2_grpc.DataNodeServiceServicer):
             context.set_details(f"Error: {str(e)}")
     
     def ReplicateBlock(self, request, context):
-        """Replica un bloque a otro DataNode."""
+        """Replica un bloque a otro DataNode siguiendo el protocolo Leader-Follower."""
         block_id = request.block_id
         target_datanode_id = request.target_datanode_id
         target_hostname = request.target_hostname
@@ -158,7 +152,7 @@ class DataNodeServicer(datanode_pb2_grpc.DataNodeServiceServicer):
             )
         
         try:
-            # Obtener los datos del bloque
+            # Obtener los datos del bloque y su checksum
             block_data = self.storage.retrieve_block(block_id)
             if not block_data:
                 return datanode_pb2.BlockResponse(
@@ -166,6 +160,10 @@ class DataNodeServicer(datanode_pb2_grpc.DataNodeServiceServicer):
                     message=f"Error reading block {block_id}",
                     block_id=block_id
                 )
+            
+            # Calcular checksum del bloque
+            import hashlib
+            checksum = hashlib.sha256(block_data).hexdigest()
             
             # Establecer conexión con el DataNode objetivo
             try:
@@ -186,16 +184,28 @@ class DataNodeServicer(datanode_pb2_grpc.DataNodeServiceServicer):
                             total_size=total_size
                         )
                 
+                # Enviar el bloque al DataNode objetivo
                 response = stub.StoreBlock(block_data_iterator())
-                channel.close()
                 
                 if response.status == datanode_pb2.BlockResponse.SUCCESS:
-                    self.logger.info(f"Block {block_id} replicated to {target_datanode_id} at {target_hostname}:{target_port}")
-                    return datanode_pb2.BlockResponse(
-                        status=datanode_pb2.BlockResponse.SUCCESS,
-                        message=f"Block {block_id} replicated to {target_datanode_id}",
-                        block_id=block_id
-                    )
+                    # Verificar la integridad del bloque replicado
+                    verify_request = datanode_pb2.BlockRequest(block_id=block_id)
+                    verify_response = stub.CheckBlock(verify_request)
+                    
+                    if verify_response.exists and verify_response.checksum == checksum:
+                        self.logger.info(f"Block {block_id} replicated successfully to {target_datanode_id} with verified integrity")
+                        return datanode_pb2.BlockResponse(
+                            status=datanode_pb2.BlockResponse.SUCCESS,
+                            message=f"Block {block_id} replicated to {target_datanode_id} with verified integrity",
+                            block_id=block_id
+                        )
+                    else:
+                        self.logger.error(f"Block integrity verification failed for {block_id} on {target_datanode_id}")
+                        return datanode_pb2.BlockResponse(
+                            status=datanode_pb2.BlockResponse.ERROR,
+                            message=f"Block integrity verification failed",
+                            block_id=block_id
+                        )
                 else:
                     self.logger.error(f"Failed to replicate block {block_id}: {response.message}")
                     return datanode_pb2.BlockResponse(
@@ -297,21 +307,20 @@ class DataNodeServicer(datanode_pb2_grpc.DataNodeServiceServicer):
             )
     
     def CheckBlock(self, request, context):
-        """Verifica si un bloque existe en el DataNode."""
+        """Verifica si un bloque existe y su integridad."""
         block_id = request.block_id
-        exists = self.storage.block_exists(block_id)
         
-        if exists:
-            size = self.storage.get_block_size(block_id)
-            checksum = self.storage.calculate_checksum(block_id)
-            self.logger.info(f"Block {block_id} exists with size {size} and checksum {checksum}")
+        try:
+            # Obtener información del bloque
+            block_info = self.storage.get_block_info(block_id)
+            
             return datanode_pb2.BlockStatus(
-                exists=True,
-                size=size if size is not None else 0,
-                checksum=checksum if checksum is not None else ""
+                exists=block_info["exists"],
+                size=block_info["size"],
+                checksum=block_info["checksum"]
             )
-        else:
-            self.logger.info(f"Block {block_id} does not exist")
+        except Exception as e:
+            self.logger.error(f"Error checking block {block_id}: {str(e)}")
             return datanode_pb2.BlockStatus(
                 exists=False,
                 size=0,

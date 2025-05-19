@@ -1,5 +1,9 @@
-from typing import List, Dict, Any, Optional, Tuple
+from typing import List, Dict, Any, Optional, Tuple, Set
 import os
+import json
+import pickle
+import uuid
+import logging
 from datetime import datetime
 from pathlib import Path
 
@@ -15,8 +19,10 @@ from src.namenode.api.models import (
 )
 
 class MetadataManager:
-    def __init__(self, db_path: str = None):
+    def __init__(self, db_path: str = None, node_id: str = None):
         self.db = MetadataDatabase(db_path)
+        self.node_id = node_id or str(uuid.uuid4())
+        self.known_nodes = set()  # Set of (node_id, hostname, port) tuples
         self._ensure_root_directory_exists()
     
     def _ensure_root_directory_exists(self):
@@ -277,33 +283,26 @@ class MetadataManager:
             self.db.update_datanode_blocks_count(datanode_id)
         return success
     
-    def get_blocks_by_datanode(self, datanode_id: str) -> List[BlockInfo]:
-        blocks_data = self.db.get_blocks_by_datanode(datanode_id)
+    def get_blocks_by_datanode(self, node_id: str) -> List[BlockInfo]:
+        """
+        Obtiene todos los bloques almacenados en un DataNode específico.
         
-        result = []
-        for block_data in blocks_data:
-            block_id = block_data["block_id"]
-            locations = self.db.get_block_locations(block_id)
+        Args:
+            node_id: ID del DataNode
             
-            block_locations = [
-                BlockLocation(
-                    block_id=block_id,
-                    datanode_id=loc["datanode_id"],
-                    is_leader=loc["is_leader"]
-                )
-                for loc in locations
-            ]
-            
-            result.append(BlockInfo(
-                block_id=block_data["block_id"],
-                file_id=block_data["file_id"],
-                size=block_data["size"],
-                locations=block_locations,
-                checksum=block_data["checksum"]
-            ))
-        
-        return result
-        
+        Returns:
+            Lista de bloques almacenados en el DataNode
+        """
+        blocks = self.db.get_blocks_by_datanode(node_id)
+        return [
+            BlockInfo(
+                block_id=block["block_id"],
+                size=block["size"],
+                locations=block["locations"]
+            )
+            for block in blocks
+        ]
+    
     def update_block(self, block_id: str, **kwargs) -> bool:
         """Actualiza la información de un bloque en la base de datos.
         
@@ -318,3 +317,137 @@ class MetadataManager:
     
     def close(self):
         self.db.close_connection()
+        
+    # Métodos para gestión de nodos conocidos
+    
+    def add_known_node(self, node_id: str, hostname: str, port: int) -> None:
+        """
+        Añade un nodo conocido a la lista de nodos del cluster.
+        
+        Args:
+            node_id: ID único del nodo
+            hostname: Hostname del nodo
+            port: Puerto gRPC del nodo
+        """
+        self.known_nodes.add((node_id, hostname, port))
+    
+    def remove_known_node(self, node_id: str) -> None:
+        """
+        Elimina un nodo conocido de la lista de nodos del cluster.
+        
+        Args:
+            node_id: ID único del nodo a eliminar
+        """
+        self.known_nodes = {(nid, host, port) for nid, host, port in self.known_nodes if nid != node_id}
+    
+    def get_known_nodes(self) -> Set[Tuple[str, str, int]]:
+        """
+        Obtiene la lista de nodos conocidos en el cluster.
+        
+        Returns:
+            Conjunto de tuplas (node_id, hostname, port)
+        """
+        return self.known_nodes
+    
+    # Métodos para serialización y deserialización de metadatos
+    
+    def serialize_metadata(self) -> bytes:
+        """
+        Serializa los metadatos para sincronización entre nodos.
+        
+        Returns:
+            Datos serializados en formato binario
+        """
+        # Obtener datos relevantes para sincronización
+        datanodes = self.list_datanodes()
+        files = []
+        blocks = []
+        
+        # Obtener todos los archivos y sus bloques
+        for file in self.db.list_all_files():
+            files.append(file)
+            file_blocks = self.get_file_blocks(file['file_id'])
+            blocks.extend([block.dict() for block in file_blocks])
+        
+        # Crear diccionario con todos los metadatos
+        metadata = {
+            'datanodes': [dn.dict() for dn in datanodes],
+            'files': files,
+            'blocks': blocks
+        }
+        
+        # Serializar usando pickle para mantener tipos complejos
+        return pickle.dumps(metadata)
+    
+    def deserialize_metadata(self, data: bytes) -> bool:
+        """
+        Deserializa y aplica metadatos recibidos de otro nodo.
+        
+        Args:
+            data: Datos serializados en formato binario
+            
+        Returns:
+            True si la deserialización fue exitosa, False en caso contrario
+        """
+        try:
+            metadata = pickle.loads(data)
+            
+            # Aplicar metadatos de DataNodes
+            for dn_data in metadata.get('datanodes', []):
+                # Verificar si el DataNode ya existe
+                existing_dn = self.get_datanode(dn_data.get('node_id'))
+                if not existing_dn:
+                    # Registrar nuevo DataNode
+                    self.db.register_datanode(
+                        dn_data.get('hostname'),
+                        dn_data.get('port'),
+                        dn_data.get('storage_capacity'),
+                        dn_data.get('available_space')
+                    )
+                else:
+                    # Actualizar DataNode existente
+                    self.db.update_datanode_status(dn_data.get('node_id'), dn_data.get('status'))
+                    self.db.update_datanode_heartbeat(dn_data.get('node_id'), dn_data.get('available_space'))
+            
+            # Aplicar metadatos de archivos
+            for file_data in metadata.get('files', []):
+                existing_file = self.get_file(file_data.get('file_id'))
+                if not existing_file:
+                    # Crear nuevo archivo
+                    self.db.create_file(
+                        file_data.get('name'),
+                        file_data.get('path'),
+                        file_data.get('type'),
+                        file_data.get('size'),
+                        file_data.get('owner')
+                    )
+                else:
+                    # Actualizar archivo existente
+                    self.db.update_file(
+                        file_data.get('file_id'),
+                        size=file_data.get('size')
+                    )
+            
+            # Aplicar metadatos de bloques
+            for block_data in metadata.get('blocks', []):
+                existing_block = self.get_block_info(block_data.get('block_id'))
+                if not existing_block:
+                    # Crear nuevo bloque
+                    self.db.create_block(
+                        block_data.get('file_id'),
+                        block_data.get('size'),
+                        block_data.get('checksum')
+                    )
+                
+                # Actualizar ubicaciones del bloque
+                for location in block_data.get('locations', []):
+                    self.add_block_location(
+                        block_data.get('block_id'),
+                        location.get('datanode_id'),
+                        location.get('is_leader', False)
+                    )
+            
+            return True
+        except Exception as e:
+            logging.error(f"Error deserializing metadata: {str(e)}")
+            return False

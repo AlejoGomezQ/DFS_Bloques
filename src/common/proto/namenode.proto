@@ -1,0 +1,49 @@
+syntax = "proto3";
+
+package namenode;
+
+// Servicio para comunicación entre NameNodes
+service NameNodeService {
+    // Solicitud de voto para elección de líder
+    rpc RequestVote(VoteRequest) returns (VoteResponse);
+    
+    // Heartbeat del líder a los seguidores
+    rpc Heartbeat(HeartbeatRequest) returns (HeartbeatResponse);
+    
+    // Sincronización de metadatos
+    rpc SyncMetadata(SyncRequest) returns (SyncResponse);
+}
+
+// Mensajes para elección de líder
+message VoteRequest {
+    string candidate_id = 1;
+    int64 term = 2;
+}
+
+message VoteResponse {
+    bool vote_granted = 1;
+    int64 term = 2;
+}
+
+// Mensajes para heartbeat
+message HeartbeatRequest {
+    string leader_id = 1;
+    int64 term = 2;
+}
+
+message HeartbeatResponse {
+    bool success = 1;
+    int64 term = 2;
+}
+
+// Mensajes para sincronización de metadatos
+message SyncRequest {
+    string source_id = 1;
+    int64 term = 2;
+    bytes metadata = 3;  // Metadatos serializados
+}
+
+message SyncResponse {
+    bool success = 1;
+    int64 term = 2;
+} 
