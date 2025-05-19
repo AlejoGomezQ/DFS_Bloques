@@ -59,6 +59,8 @@ class DFSCLI:
                     self._handle_rmdir(args)
                 elif command == "cd":
                     self._handle_cd(args)
+                elif command == "rm":
+                    self._handle_rm(args)
                 elif command == "pwd":
                     print(f"Directorio actual: {self.current_dir}")
                 else:
@@ -79,7 +81,8 @@ Comandos disponibles:
   get <ruta_dfs> <archivo_local> [--workers=N]  - Descarga un archivo del DFS
   ls [ruta] [-l]                               - Lista el contenido de un directorio
   mkdir <ruta> [-p]                            - Crea un nuevo directorio
-  rmdir <ruta>                                 - Elimina un directorio vacío
+  rmdir <ruta> [-r] [-f]                       - Elimina un directorio ([-r] recursivamente)
+  rm <ruta> [-f]                               - Elimina un archivo
   cd <ruta>                                    - Cambia el directorio actual
   pwd                                          - Muestra el directorio actual
   help                                         - Muestra esta ayuda
@@ -453,18 +456,23 @@ Opciones:
     
     def _handle_rmdir(self, args: List[str]):
         """
-        Maneja el comando rmdir para eliminar directorios vacíos.
+        Maneja el comando rmdir para eliminar directorios.
         
         Args:
-            args: Argumentos del comando [ruta]
+            args: Argumentos del comando [ruta] [-r] [-f]
         """
         if not args:
-            print("Uso: rmdir <ruta>")
+            print("Uso: rmdir <ruta> [-r] [-f]")
+            print("  -r: Eliminar recursivamente (incluyendo contenido)")
+            print("  -f: Forzar eliminación sin confirmación")
             return
         
+        # Procesar argumentos
         path = args[0]
+        recursive = "-r" in args
+        force = "-f" in args
         
-        # Manejar rutas relativas
+        # Resolver la ruta completa
         if not path.startswith('/'):
             path = self._resolve_path(path)
         
@@ -481,15 +489,36 @@ Opciones:
                 print(f"Error: El directorio {path} no existe")
                 return
             
-            # Verificar que el directorio está vacío
+            # Verificar si el directorio está vacío
             contents = dir_info.get('contents', [])
-            if contents:
-                print(f"Error: El directorio {path} no está vacío")
+            
+            # Si no está vacío y no se usa -r, mostrar error
+            if contents and not recursive:
+                print(f"Error: El directorio {path} no está vacío. Use -r para eliminar recursivamente.")
                 return
             
+            # Confirmar la eliminación si no se usa -f
+            if not force:
+                if recursive and contents:
+                    confirm = input(f"\u00bfEstá seguro de que desea eliminar {path} y todo su contenido? (s/n): ")
+                else:
+                    confirm = input(f"\u00bfEstá seguro de que desea eliminar {path}? (s/n): ")
+                
+                if confirm.lower() != "s":
+                    print("Operación cancelada")
+                    return
+            
             # Eliminar el directorio
-            self.client.namenode_client.delete_directory(path)
-            print(f"Directorio {path} eliminado exitosamente")
+            if recursive and contents:
+                # Eliminar recursivamente
+                success = self.client.delete_directory_recursive(path)
+                if not success:
+                    print(f"No se pudo eliminar el directorio {path} recursivamente")
+                    return
+            else:
+                # Eliminar directorio vacío
+                self.client.namenode_client.delete_directory(path)
+                print(f"Directorio {path} eliminado exitosamente")
             
             # Si estamos en el directorio que se eliminó, volver al directorio padre
             if self.current_dir.startswith(path):
@@ -540,6 +569,40 @@ Opciones:
         
         except Exception as e:
             print(f"Error al cambiar al directorio {new_path}: {e}")
+    
+    def _handle_rm(self, args: List[str]):
+        """
+        Maneja el comando rm para eliminar archivos.
+        
+        Args:
+            args: Argumentos del comando [ruta] [-f]
+        """
+        if not args:
+            print("Uso: rm <ruta> [-f]")
+            return
+        
+        # Procesar argumentos
+        path = args[0]
+        force = "-f" in args
+        
+        # Resolver la ruta completa
+        if not path.startswith('/'):
+            path = self._resolve_path(path)
+        
+        # Confirmar la eliminación si no se usa -f
+        if not force:
+            confirm = input(f"\u00bfEstá seguro de que desea eliminar {path}? (s/n): ")
+            if confirm.lower() != "s":
+                print("Operación cancelada")
+                return
+        
+        # Eliminar el archivo
+        try:
+            success = self.client.delete_file(path)
+            if not success:
+                print(f"No se pudo eliminar {path}")
+        except Exception as e:
+            print(f"Error al eliminar {path}: {e}")
     
     def _resolve_path(self, relative_path: str) -> str:
         """

@@ -8,10 +8,18 @@ import argparse
 import uuid
 # Importaciones absolutas en lugar de relativas
 from src.namenode.api.routes import files_router, blocks_router, datanodes_router, directories_router
+from src.namenode.api.routes.balancer import router as balancer_router
 from src.namenode.api.models import ErrorResponse
-from src.namenode.metadata.manager import MetadataManager, get_metadata_manager
+from src.namenode.metadata.manager import MetadataManager
 from src.namenode.monitoring.datanode_monitor import DataNodeMonitor
 from src.namenode.leader.leader_election import LeaderElection
+
+# Variable global para el gestor de metadatos
+_metadata_manager = None
+
+def get_metadata_manager():
+    global _metadata_manager
+    return _metadata_manager
 from src.namenode.leader.namenode_service import serve as serve_grpc
 from src.namenode.sync.metadata_sync import MetadataSync
 import uvicorn
@@ -43,6 +51,7 @@ app.include_router(files_router, prefix="/files", tags=["Files"])
 app.include_router(blocks_router, prefix="/blocks", tags=["Blocks"])
 app.include_router(datanodes_router, prefix="/datanodes", tags=["DataNodes"])
 app.include_router(directories_router, prefix="/directories", tags=["Directories"])
+app.include_router(balancer_router, prefix="/balancer", tags=["LoadBalancer"])
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -63,10 +72,11 @@ datanode_monitor = None
 leader_election = None
 metadata_sync = None
 grpc_server = None
+load_balancer = None
 
 @app.on_event("startup")
 async def startup_event():
-    global datanode_monitor, leader_election, metadata_sync, grpc_server
+    global datanode_monitor, leader_election, metadata_sync, grpc_server, load_balancer
     
     # Obtener configuración del entorno o usar valores predeterminados
     node_id = os.environ.get("NAMENODE_ID", str(uuid.uuid4()))
@@ -75,7 +85,9 @@ async def startup_event():
     grpc_port = int(os.environ.get("NAMENODE_GRPC_PORT", "50051"))
     
     # Inicializar el gestor de metadatos con el ID del nodo
-    metadata_manager = MetadataManager(node_id=node_id)
+    global _metadata_manager
+    _metadata_manager = MetadataManager(node_id=node_id)
+    metadata_manager = _metadata_manager
     
     # Procesar nodos conocidos del entorno
     known_nodes_str = os.environ.get("NAMENODE_KNOWN_NODES", "")
@@ -119,11 +131,18 @@ async def startup_event():
     # Iniciar el sistema de elección de líder y sincronización de metadatos
     leader_election.start()
     metadata_sync.start()
+    
+    # Inicializar y arrancar el balanceador de carga
+    from src.namenode.balancer.load_balancer import LoadBalancer
+    load_balancer = LoadBalancer(metadata_manager, auto_balance=True)
+    load_balancer.start()
+    logger.info(f"Load balancer started with threshold {load_balancer.balance_threshold} and check interval {load_balancer.check_interval}s")
+    
     logger.info(f"NameNode {node_id} started with REST API at {hostname}:{rest_port} and gRPC at {hostname}:{grpc_port}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global datanode_monitor, leader_election, metadata_sync, grpc_server
+    global datanode_monitor, leader_election, metadata_sync, grpc_server, load_balancer
     
     # Detener el monitor de DataNodes
     if datanode_monitor:
@@ -145,10 +164,16 @@ async def shutdown_event():
         grpc_server.stop(0)  # 0 significa detener inmediatamente
         logger.info("gRPC server stopped")
     
+    # Detener el balanceador de carga
+    if load_balancer:
+        load_balancer.stop()
+        logger.info("Load balancer stopped")
+    
     # Cerrar el gestor de metadatos
-    metadata_manager = get_metadata_manager()
-    metadata_manager.close()
-    logger.info("Metadata manager closed")
+    global _metadata_manager
+    if _metadata_manager:
+        _metadata_manager.close()
+        logger.info("Metadata manager closed")
 
 if __name__ == "__main__":
     # Configurar argumentos de línea de comandos

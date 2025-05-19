@@ -34,6 +34,9 @@ message BlockData {
   bytes data = 2;
   uint64 offset = 3;
   uint64 total_size = 4;
+  uint64 original_size = 5;      // Tamaño original antes de la compresión
+  bool compressed = 6;           // Indica si los datos están comprimidos
+  bytes compression_metadata = 7; // Metadatos de compresión (algoritmo, nivel, etc.)
 }
 
 // Respuesta a operaciones de bloque
@@ -73,4 +76,22 @@ message TransferRequest {
   string target_datanode_id = 5;
   string target_hostname = 6;
   int32 target_port = 7;
+}
+
+// Estadísticas de transferencia
+message TransferStats {
+  uint64 bytes_sent = 1;
+  uint64 bytes_received = 2;
+  uint64 compressed_bytes_sent = 3;
+  uint64 compressed_bytes_received = 4;
+  float compression_ratio_sent = 5;
+  float compression_ratio_received = 6;
+  uint32 blocks_compressed = 7;
+  uint32 blocks_uncompressed = 8;
+  uint32 blocks_transferred = 9;
+  uint32 blocks_transfer_failed = 10;
+}
+
+// Mensaje vacío para solicitudes sin parámetros
+message Empty {
 }
