@@ -172,11 +172,21 @@ class BlockStorage:
                 if os.path.isfile(os.path.join(self.storage_dir, f))]
     
     def get_available_space(self) -> int:
-        if not os.path.exists(self.storage_dir):
-            return 0
-        
-        stats = shutil.disk_usage(self.storage_dir)
-        return stats.free
+        """
+        Obtiene el espacio disponible en el directorio de almacenamiento.
+        Si el directorio no existe, devuelve un valor por defecto.
+        """
+        try:
+            if not os.path.exists(self.storage_dir):
+                os.makedirs(self.storage_dir, exist_ok=True)
+            
+            stats = shutil.disk_usage(self.storage_dir)
+            # Asegurar que siempre haya al menos 1GB disponible para bloques pequeños
+            return max(stats.free, 1024 * 1024 * 1024)  # 1GB mínimo
+        except Exception as e:
+            self.logger.error(f"Error getting available space: {str(e)}")
+            # En caso de error, devolver un valor por defecto de 1GB
+            return 1024 * 1024 * 1024
     
     def stream_block(self, block_id: str, chunk_size: int = 4096) -> Optional[List[Tuple[bytes, int, int]]]:
         block_path = self._get_block_path(block_id)

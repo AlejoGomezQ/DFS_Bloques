@@ -46,8 +46,26 @@ class NameNodeClient:
     def get_block_info(self, block_id: str) -> Dict:
         return self._make_request('get', f'/blocks/{block_id}')
     
-    def get_file_blocks(self, file_id: str) -> List[Dict]:
-        return self._make_request('get', f'/blocks/file/{file_id}')
+    def get_file_blocks(self, path: str) -> List[Dict]:
+        """
+        Obtiene información de los bloques de un archivo.
+        
+        Args:
+            path: Ruta del archivo en el DFS
+            
+        Returns:
+            Lista de diccionarios con información de los bloques
+        """
+        try:
+            response = self._make_request('get', f'/files/blocks/{path}')
+            if isinstance(response, dict) and 'blocks' in response:
+                return response['blocks']
+            elif isinstance(response, list):
+                return response
+            return []
+        except Exception as e:
+            print(f"Error al obtener información de los bloques: {e}")
+            return []
     
     def report_block_status(self, block_reports: List[Dict]) -> None:
         self._make_request('post', '/blocks/report', data=block_reports)
@@ -57,10 +75,24 @@ class NameNodeClient:
         return self._make_request('post', '/datanodes/register', data=registration)
     
     def list_datanodes(self, status: Optional[str] = None) -> List[Dict]:
-        endpoint = '/datanodes/'
-        if status:
-            endpoint += f'?status={status}'
-        return self._make_request('get', endpoint)
+        """
+        Obtiene la lista de DataNodes y su información.
+        
+        Args:
+            status: Estado de los DataNodes a filtrar (opcional)
+            
+        Returns:
+            Lista de diccionarios con información de los DataNodes
+        """
+        try:
+            endpoint = '/datanodes'
+            if status:
+                endpoint += f'?status={status}'
+            response = self._make_request('get', endpoint)
+            return response if isinstance(response, list) else []
+        except Exception as e:
+            print(f"Error al obtener lista de DataNodes: {e}")
+            return []
     
     def get_datanode(self, node_id: str) -> Dict:
         return self._make_request('get', f'/datanodes/{node_id}')
@@ -75,5 +107,51 @@ class NameNodeClient:
     def list_directory(self, path: str) -> Dict:
         return self._make_request('get', f'/directories/{path}')
     
-    def delete_directory(self, path: str) -> None:
-        self._make_request('delete', f'/directories/{path}')
+    def delete_directory(self, path: str, recursive: bool = False) -> None:
+        endpoint = f'/directories/{path}'
+        if recursive:
+            endpoint += '?recursive=true'
+        self._make_request('delete', endpoint)
+
+    def get_file_info(self, path: str) -> Optional[Dict]:
+        """
+        Obtiene información detallada de un archivo.
+        
+        Args:
+            path: Ruta del archivo en el DFS
+            
+        Returns:
+            Diccionario con la información del archivo o None si no existe
+        """
+        try:
+            response = self._make_request('get', f'/files/info/{path}')
+            if isinstance(response, dict):
+                return response
+            return None
+        except Exception as e:
+            print(f"Error al obtener información del archivo: {e}")
+            return None
+
+    def get_system_stats(self) -> Dict:
+        """
+        Obtiene estadísticas generales del sistema.
+        
+        Returns:
+            Diccionario con estadísticas del sistema
+        """
+        try:
+            response = self._make_request('get', '/system/stats')
+            return response.json() if response else {
+                'namenode_active': False,
+                'total_files': 0,
+                'total_blocks': 0,
+                'replication_factor': 2
+            }
+        except Exception as e:
+            print(f"Error al obtener estadísticas del sistema: {e}")
+            return {
+                'namenode_active': False,
+                'total_files': 0,
+                'total_blocks': 0,
+                'replication_factor': 2
+            }

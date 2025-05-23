@@ -63,6 +63,10 @@ class DFSCLI:
                     self._handle_rm(args)
                 elif command == "pwd":
                     print(f"Directorio actual: {self.current_dir}")
+                elif command == "info":
+                    self._handle_info(args)
+                elif command == "status":
+                    self._handle_status()
                 else:
                     print(f"Comando desconocido: {command}")
                     print("Escribe 'help' para ver los comandos disponibles.")
@@ -85,6 +89,8 @@ Comandos disponibles:
   rm <ruta> [-f]                               - Elimina un archivo
   cd <ruta>                                    - Cambia el directorio actual
   pwd                                          - Muestra el directorio actual
+  info <ruta>                                  - Muestra información detallada de un archivo
+  status                                       - Muestra el estado del sistema
   help                                         - Muestra esta ayuda
   exit, quit                                   - Sale del CLI
 
@@ -148,15 +154,20 @@ Opciones:
         print(f"  Workers: {max_workers}")
         print("-" * 50)
         
-        # Iniciar la subida
-        start_time = time.time()
-        success = self.client.put_file(local_path, dfs_path, max_workers)
-        end_time = time.time()
-        
-        print("-" * 50)
-        if success:
-            print(f"Operación completada en {end_time - start_time:.2f} segundos")
-        else:
+        try:
+            # Iniciar la subida
+            start_time = time.time()
+            success = self.client.put_file(local_path, dfs_path, max_workers)
+            end_time = time.time()
+            
+            print("-" * 50)
+            if success:
+                print(f"Operación completada en {end_time - start_time:.2f} segundos")
+            else:
+                print("La operación falló o se completó con errores")
+        except Exception as e:
+            print(f"Error al subir el archivo: {str(e)}")
+            print("-" * 50)
             print("La operación falló o se completó con errores")
     
     def _format_size(self, size_bytes: int) -> str:
@@ -273,7 +284,14 @@ Opciones:
                 return
             
             # Ordenar contenido: primero directorios, luego archivos, ambos alfabéticamente
-            contents.sort(key=lambda x: (0 if x.get('type') == 'directory' else 1, x.get('name', '')))
+            # Asegurarse de usar solo el nombre del archivo/directorio para ordenar
+            def get_sort_key(item):
+                name = item.get('name', '')
+                if '/' in name:
+                    name = name.split('/')[-1]
+                return (0 if item.get('type') == 'directory' else 1, name.lower())
+            
+            contents.sort(key=get_sort_key)
             
             # Formatear la salida
             if long_format:
@@ -301,6 +319,10 @@ Opciones:
             item_type = item.get('type', 'desconocido')
             item_name = item.get('name', 'sin nombre')
             
+            # Asegurarse de que el nombre no incluya la ruta completa
+            if '/' in item_name:
+                item_name = item_name.split('/')[-1]
+            
             # Colorear según el tipo (directorios en azul, archivos en blanco)
             if item_type == 'directory':
                 formatted_name = f"\033[1;34m{item_name}/\033[0m"  # Azul para directorios
@@ -326,6 +348,10 @@ Opciones:
             item_size = item.get('size', 0)
             item_modified = item.get('modified_at', None)
             
+            # Asegurarse de que el nombre no incluya la ruta completa
+            if '/' in item_name:
+                item_name = item_name.split('/')[-1]
+            
             # Formatear tamaño
             if item_type == 'file':
                 size_str = self._format_size(item_size)
@@ -335,7 +361,6 @@ Opciones:
             # Formatear fecha de modificación
             if item_modified:
                 try:
-                    # Convertir timestamp a fecha legible
                     date_str = datetime.datetime.fromtimestamp(item_modified).strftime('%Y-%m-%d %H:%M:%S')
                 except:
                     date_str = "-"
@@ -384,8 +409,10 @@ Opciones:
         try:
             if create_parents:
                 # Crear directorios padres recursivamente
-                self._create_directory_recursive(path)
-                print(f"Directorio {path} y sus padres creados exitosamente")
+                if self._create_directory_recursive(path):
+                    print(f"Directorio {path} y sus padres creados exitosamente")
+                else:
+                    print(f"Error al crear el directorio {path}")
             else:
                 # Verificar que el directorio padre existe
                 parent_dir = os.path.dirname(path)
@@ -396,7 +423,7 @@ Opciones:
                         print("Use 'mkdir -p' para crear los directorios padres automáticamente")
                         return
                 
-                # Obtener el nombre del directorio
+                # Obtener el nombre del directorio (solo el último componente)
                 dir_name = os.path.basename(path)
                 
                 # Crear el directorio
@@ -406,8 +433,14 @@ Opciones:
                     'type': 'directory'
                 }
                 
-                self.client.namenode_client.create_directory(directory)
-                print(f"Directorio {path} creado exitosamente")
+                try:
+                    self.client.namenode_client.create_directory(directory)
+                    print(f"Directorio {path} creado exitosamente")
+                except Exception as e:
+                    if "already exists" in str(e):
+                        print(f"Error: El directorio {path} ya existe")
+                    else:
+                        raise e
         
         except Exception as e:
             print(f"Error al crear el directorio {path}: {e}")
@@ -468,7 +501,13 @@ Opciones:
             return
         
         # Procesar argumentos
-        path = args[0]
+        # Filtrar los argumentos para separar la ruta de las opciones
+        path_args = [arg for arg in args if not arg.startswith('-')]
+        if not path_args:
+            print("Error: Debe especificar una ruta")
+            return
+        
+        path = path_args[0]
         recursive = "-r" in args
         force = "-f" in args
         
@@ -482,43 +521,48 @@ Opciones:
             return
         
         try:
-            # Verificar que el directorio existe
-            dir_info = self.client.namenode_client.list_directory(path)
+            # Verificar que el directorio existe y obtener la ruta completa
+            dir_info = None
+            try:
+                dir_info = self.client.namenode_client.list_directory(path)
+            except Exception:
+                # Intentar buscar el directorio en el directorio actual
+                current_dir_info = self.client.namenode_client.list_directory(self.current_dir)
+                if current_dir_info and 'contents' in current_dir_info:
+                    for item in current_dir_info['contents']:
+                        if item['name'] == path.strip('/') and item['type'] == 'directory':
+                            path = os.path.join(self.current_dir, path).replace('\\', '/')
+                            if not path.startswith('/'):
+                                path = '/' + path
+                            dir_info = self.client.namenode_client.list_directory(path)
+                            break
             
             if not dir_info:
                 print(f"Error: El directorio {path} no existe")
                 return
             
-            # Verificar si el directorio está vacío
-            contents = dir_info.get('contents', [])
-            
-            # Si no está vacío y no se usa -r, mostrar error
-            if contents and not recursive:
-                print(f"Error: El directorio {path} no está vacío. Use -r para eliminar recursivamente.")
-                return
-            
             # Confirmar la eliminación si no se usa -f
             if not force:
-                if recursive and contents:
-                    confirm = input(f"\u00bfEstá seguro de que desea eliminar {path} y todo su contenido? (s/n): ")
-                else:
-                    confirm = input(f"\u00bfEstá seguro de que desea eliminar {path}? (s/n): ")
-                
-                if confirm.lower() != "s":
-                    print("Operación cancelada")
+                try:
+                    if recursive and dir_info.get('contents', []):
+                        confirm = input(f"¿Desea eliminar {path} y todo su contenido? (s/n): ")
+                    else:
+                        confirm = input(f"¿Desea eliminar {path}? (s/n): ")
+                    
+                    if confirm.lower() != "s":
+                        print("Operación cancelada")
+                        return
+                except (KeyboardInterrupt, EOFError):
+                    print("\nOperación cancelada")
                     return
             
             # Eliminar el directorio
-            if recursive and contents:
-                # Eliminar recursivamente
-                success = self.client.delete_directory_recursive(path)
-                if not success:
-                    print(f"No se pudo eliminar el directorio {path} recursivamente")
-                    return
-            else:
-                # Eliminar directorio vacío
-                self.client.namenode_client.delete_directory(path)
+            try:
+                self.client.namenode_client.delete_directory(path, recursive=recursive)
                 print(f"Directorio {path} eliminado exitosamente")
+            except Exception as e:
+                print(f"Error al eliminar el directorio: {e}")
+                return
             
             # Si estamos en el directorio que se eliminó, volver al directorio padre
             if self.current_dir.startswith(path):
@@ -603,6 +647,105 @@ Opciones:
                 print(f"No se pudo eliminar {path}")
         except Exception as e:
             print(f"Error al eliminar {path}: {e}")
+    
+    def _handle_info(self, args: List[str]):
+        """
+        Maneja el comando info para mostrar información detallada de un archivo.
+        
+        Args:
+            args: Argumentos del comando [ruta]
+        """
+        if not args:
+            print("Uso: info <ruta>")
+            return
+        
+        path = args[0]
+        
+        # Manejar rutas relativas
+        if not path.startswith('/'):
+            path = self._resolve_path(path)
+        
+        try:
+            # Obtener información del archivo
+            file_info = self.client.namenode_client.get_file_info(path)
+            if not file_info:
+                print(f"Error: El archivo {path} no existe")
+                return
+            
+            # Obtener información de los bloques
+            blocks_info = self.client.namenode_client.get_file_blocks(path)
+            
+            # Mostrar información
+            print("\nInformación del archivo:")
+            print(f"  Ruta: {path}")
+            print(f"  Tamaño: {self._format_size(file_info.get('size', 0))}")
+            print(f"  Creado: {file_info.get('created_at', 'N/A')}")
+            print(f"  Modificado: {file_info.get('modified_at', 'N/A')}")
+            
+            print("\nBloques:")
+            for block in blocks_info:
+                print(f"\n  Bloque: {block['block_id']}")
+                print(f"  Tamaño: {self._format_size(block.get('size', 0))}")
+                print("  Ubicaciones:")
+                for location in block.get('locations', []):
+                    leader_status = "✓ (Leader)" if location.get('is_leader') else "✓"
+                    print(f"    - DataNode {location['datanode_id']}: {leader_status}")
+        
+        except Exception as e:
+            print(f"Error al obtener información: {e}")
+    
+    def _handle_status(self):
+        """
+        Maneja el comando status para mostrar el estado del sistema.
+        """
+        try:
+            # Obtener información de los DataNodes
+            datanodes = self.client.namenode_client.list_datanodes()
+            
+            # Obtener estadísticas del sistema
+            stats = self.client.namenode_client.get_system_stats()
+            
+            print("\nEstado del Sistema de Archivos Distribuido")
+            print("=" * 50)
+            
+            # Mostrar información del NameNode
+            print("\nNameNode:")
+            print(f"  URL: {self.client.namenode_client.base_url}")
+            print(f"  Estado: {'✓ Activo' if stats.get('namenode_active', False) else '✗ Inactivo'}")
+            
+            # Mostrar información de DataNodes
+            print("\nDataNodes:")
+            active_nodes = 0
+            total_capacity = 0
+            total_available = 0
+            
+            for node in datanodes:
+                status = node.get('status', 'UNKNOWN')
+                if status == 'ACTIVE':
+                    active_nodes += 1
+                
+                capacity = node.get('storage_capacity', 0)
+                available = node.get('available_space', 0)
+                total_capacity += capacity
+                total_available += available
+                
+                print(f"\n  DataNode {node.get('node_id', 'N/A')}:")
+                print(f"    Estado: {'✓ Activo' if status == 'ACTIVE' else '✗ Inactivo'}")
+                print(f"    Almacenamiento: {self._format_size(available)} libre de {self._format_size(capacity)}")
+                print(f"    Bloques almacenados: {node.get('blocks_stored', 0)}")
+                print(f"    Último heartbeat: {node.get('last_heartbeat', 'N/A')}")
+            
+            # Mostrar estadísticas generales
+            print("\nEstadísticas Generales:")
+            print(f"  DataNodes activos: {active_nodes} de {len(datanodes)}")
+            print(f"  Capacidad total: {self._format_size(total_capacity)}")
+            print(f"  Espacio disponible: {self._format_size(total_available)}")
+            print(f"  Archivos totales: {stats.get('total_files', 0)}")
+            print(f"  Bloques totales: {stats.get('total_blocks', 0)}")
+            print(f"  Factor de replicación: {stats.get('replication_factor', 2)}")
+        
+        except Exception as e:
+            print(f"Error al obtener el estado del sistema: {e}")
     
     def _resolve_path(self, relative_path: str) -> str:
         """

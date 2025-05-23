@@ -1,6 +1,9 @@
-from fastapi import APIRouter, HTTPException, Path, Query, Body, Depends
+from fastapi import FastAPI, APIRouter, HTTPException, Path, Query, Body, Depends
 from typing import List, Optional
 import os
+from datetime import datetime
+
+app = FastAPI()  # Crear instancia de FastAPI
 
 # Importación absoluta en lugar de relativa
 from src.namenode.api.models import (
@@ -16,13 +19,7 @@ from src.namenode.api.models import (
     BlockStatusInfo
 )
 from src.namenode.metadata.manager import MetadataManager
-
-# Singleton instance of MetadataManager
-metadata_manager = MetadataManager()
-
-# Dependency to get the metadata manager
-def get_metadata_manager():
-    return metadata_manager
+from src.namenode.api.dependencies import get_metadata_manager
 
 # Routers
 files_router = APIRouter(prefix="/files", tags=["Files"])
@@ -100,6 +97,93 @@ async def get_file_by_path(path: str = Path(..., description="The path of the fi
     
     return file
 
+@files_router.get("/info/{path:path}")
+async def get_file_info(path: str, manager: MetadataManager = Depends(get_metadata_manager)):
+    """
+    Obtiene información detallada de un archivo.
+    """
+    try:
+        # Primero verificar si el archivo existe
+        file = manager.get_file_by_path(path)
+        if not file:
+            raise HTTPException(
+                status_code=404, 
+                detail=f"El archivo {path} no existe en el sistema"
+            )
+        
+        # Obtener información detallada
+        file_info = manager.get_file_info(path)
+        if not file_info:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Error al obtener información detallada del archivo {path}"
+            )
+        
+        # Agregar información temporal si no existe
+        if 'created_at' not in file_info:
+            file_info['created_at'] = datetime.now().isoformat()
+        if 'modified_at' not in file_info:
+            file_info['modified_at'] = datetime.now().isoformat()
+        
+        return file_info
+    except HTTPException:
+        raise
+    except Exception as e:
+        import traceback
+        error_detail = f"Error interno al procesar la solicitud: {str(e)}\n{traceback.format_exc()}"
+        print(error_detail)
+        raise HTTPException(status_code=500, detail=error_detail)
+
+@files_router.get("/blocks/{path:path}")
+async def get_file_blocks(path: str, manager: MetadataManager = Depends(get_metadata_manager)):
+    """
+    Obtiene información de los bloques de un archivo.
+    """
+    try:
+        # Primero obtener el archivo
+        file = manager.get_file_by_path(path)
+        if not file:
+            raise HTTPException(status_code=404, detail=f"Archivo no encontrado: {path}")
+        
+        # Obtener los bloques del archivo
+        blocks = manager.get_file_blocks(file.file_id)
+        if not blocks:
+            return {"blocks": []}
+        
+        # Convertir los bloques a diccionarios
+        blocks_dict = []
+        for block in blocks:
+            block_dict = {
+                "block_id": getattr(block, 'block_id', None),
+                "file_id": getattr(block, 'file_id', None),
+                "size": getattr(block, 'size', 0),
+                "checksum": getattr(block, 'checksum', None),
+                "locations": []
+            }
+            
+            # Obtener las ubicaciones del bloque
+            try:
+                locations = manager.db.get_block_locations(block.block_id)
+                if locations:
+                    block_dict["locations"] = [
+                        {
+                            "datanode_id": loc.datanode_id,
+                            "is_leader": loc.is_leader
+                        }
+                        for loc in locations
+                    ]
+            except Exception as e:
+                print(f"Error al obtener ubicaciones del bloque {block.block_id}: {e}")
+            
+            blocks_dict.append(block_dict)
+        
+        return {"blocks": blocks_dict}
+    except Exception as e:
+        import traceback
+        error_detail = f"{str(e)}\n{traceback.format_exc()}"
+        print(f"Error en get_file_blocks: {error_detail}")
+        raise HTTPException(status_code=500, detail=error_detail)
+
 # Blocks Endpoints
 @blocks_router.get("/{block_id}", response_model=BlockInfo)
 async def get_block_info(block_id: str = Path(..., description="The ID of the block to retrieve"), manager: MetadataManager = Depends(get_metadata_manager)):
@@ -131,37 +215,55 @@ async def create_block(block_info: BlockInfo = Body(..., description="Block info
     """
     Register a new block in the system.
     """
-    # Verificar que el archivo existe
-    file = manager.get_file(block_info.file_id)
-    if not file:
-        raise HTTPException(status_code=404, detail=f"File not found with ID: {block_info.file_id}")
-    
-    if file.type == FileType.DIRECTORY:
-        raise HTTPException(status_code=400, detail="Cannot add blocks to directories")
-    
-    # Crear el bloque
-    block_id = manager.create_block(
-        file_id=block_info.file_id,
-        size=block_info.size,
-        checksum=block_info.checksum
-    )
-    
-    # Si se proporcionaron ubicaciones, registrarlas
-    for location in block_info.locations:
-        # Verificar que el DataNode existe
-        datanode = manager.get_datanode(location.datanode_id)
-        if not datanode:
-            continue
+    try:
+        # Verificar que el archivo existe
+        file = manager.get_file(block_info.file_id)
+        if not file:
+            raise HTTPException(status_code=404, detail=f"File not found with ID: {block_info.file_id}")
         
-        # Añadir la ubicación del bloque
-        manager.add_block_location(
-            block_id=block_id,
-            datanode_id=location.datanode_id,
-            is_leader=location.is_leader
-        )
-    
-    # Devolver la información del bloque creado
-    return manager.get_block_info(block_id)
+        if file.type == FileType.DIRECTORY:
+            raise HTTPException(status_code=400, detail="Cannot add blocks to directories")
+        
+        # Verificar que el bloque no existe ya
+        existing_block = manager.get_block_info(block_info.block_id)
+        if existing_block:
+            # Si el bloque ya existe, actualizamos su información
+            manager.update_block(block_info.block_id, size=block_info.size, checksum=block_info.checksum)
+        else:
+            # Crear el bloque nuevo
+            manager.create_block(
+                file_id=block_info.file_id,
+                size=block_info.size,
+                checksum=block_info.checksum,
+                block_id=block_info.block_id
+            )
+        
+        # Procesar las ubicaciones del bloque
+        if block_info.locations:
+            for location in block_info.locations:
+                # Verificar que el DataNode existe y está activo
+                datanode = manager.get_datanode(location.datanode_id)
+                if not datanode or datanode.status != "active":
+                    continue
+                
+                # Añadir la ubicación del bloque
+                try:
+                    manager.add_block_location(
+                        block_id=location.block_id,
+                        datanode_id=location.datanode_id,
+                        is_leader=location.is_leader
+                    )
+                except Exception as e:
+                    print(f"Error al añadir ubicación para bloque {location.block_id}: {str(e)}")
+                    continue
+        
+        # Devolver la información actualizada del bloque
+        return manager.get_block_info(block_info.block_id)
+    except Exception as e:
+        import traceback
+        error_detail = f"Error creating block: {str(e)}\n{traceback.format_exc()}"
+        print(error_detail)
+        raise HTTPException(status_code=500, detail=error_detail)
 
 @blocks_router.post("/report", status_code=204)
 async def report_block_status(block_reports: List[BlockInfo], manager: MetadataManager = Depends(get_metadata_manager)):
@@ -355,24 +457,42 @@ async def create_directory(directory: FileMetadata, manager: MetadataManager = D
     if directory.type != FileType.DIRECTORY:
         raise HTTPException(status_code=400, detail="Type must be 'directory'")
     
-    # Verificar si ya existe un directorio con la misma ruta
-    existing_dir = manager.get_file_by_path(directory.path)
-    if existing_dir:
-        raise HTTPException(status_code=409, detail=f"Directory already exists at path: {directory.path}")
+    # Normalizar la ruta
+    normalized_path = os.path.normpath(directory.path).replace("\\", "/")
+    if not normalized_path.startswith("/"):
+        normalized_path = "/" + normalized_path
     
-    # Verificar que el directorio padre existe, excepto para el directorio raíz
-    if directory.path == "/":
-        # Caso especial para el directorio raíz
-        pass
-    else:
-        parent_path = os.path.dirname(directory.path)
-        if parent_path and not manager.get_file_by_path(parent_path):
-            raise HTTPException(status_code=404, detail=f"Parent directory does not exist: {parent_path}")
+    # Verificar si ya existe un directorio con la misma ruta
+    existing_dir = manager.get_file_by_path(normalized_path)
+    if existing_dir:
+        raise HTTPException(status_code=409, detail=f"Directory already exists at path: {normalized_path}")
+    
+    # Caso especial para el directorio raíz
+    if normalized_path == "/":
+        created_dir = manager.create_file(
+            name="",
+            path="/",
+            file_type=FileType.DIRECTORY,
+            owner=directory.owner or "system"
+        )
+        if not created_dir:
+            raise HTTPException(status_code=500, detail="Failed to create root directory")
+        return created_dir
+    
+    # Para otros directorios, verificar que el directorio padre existe
+    parent_path = os.path.dirname(normalized_path)
+    parent_dir = manager.get_file_by_path(parent_path)
+    
+    if not parent_dir:
+        raise HTTPException(status_code=404, detail=f"Parent directory does not exist: {parent_path}")
+    
+    if parent_dir.type != FileType.DIRECTORY:
+        raise HTTPException(status_code=400, detail=f"Parent path is not a directory: {parent_path}")
     
     # Crear el directorio en el sistema
     created_dir = manager.create_file(
-        name=directory.name,
-        path=directory.path,
+        name=os.path.basename(normalized_path),
+        path=normalized_path,
         file_type=FileType.DIRECTORY,
         owner=directory.owner
     )
@@ -387,41 +507,90 @@ async def list_directory(path: str = Path(..., description="The path of the dire
     """
     List the contents of a directory.
     """
-    # Verificar si el directorio existe
-    dir_info = manager.get_file_by_path(path)
-    if not dir_info:
-        # Si es la raíz y no existe, intentar crearla
-        if path == "" or path == "/":
-            manager.create_file(name="", path="", file_type=FileType.DIRECTORY)
-        else:
-            raise HTTPException(status_code=404, detail=f"Directory not found at path: {path}")
-    elif dir_info.type != FileType.DIRECTORY:
-        raise HTTPException(status_code=400, detail=f"Path is not a directory: {path}")
+    # Normalizar la ruta
+    if not path or path == "/":
+        normalized_path = "/"
+    else:
+        normalized_path = "/" + path.strip("/")
     
-    return manager.list_directory(path)
-
-@directories_router.delete("/{path:path}", status_code=200)
-async def delete_directory(path: str = Path(..., description="The path of the directory to delete"), manager: MetadataManager = Depends(get_metadata_manager)):
-    """
-    Delete an empty directory.
-    """
     # Verificar si el directorio existe
+    dir_info = manager.get_file_by_path(normalized_path)
+    
+    # Caso especial para el directorio raíz
+    if normalized_path == "/" and not dir_info:
+        # Intentar inicializar el directorio raíz
+        from src.namenode.init_root import init_root_directory
+        if not init_root_directory(manager):
+            raise HTTPException(status_code=500, detail="Failed to initialize root directory")
+        dir_info = manager.get_file_by_path("/")
+    
+    if not dir_info:
+        raise HTTPException(status_code=404, detail=f"Directory not found at path: {normalized_path}")
+    
+    if dir_info.type != FileType.DIRECTORY:
+        raise HTTPException(status_code=400, detail=f"Path is not a directory: {normalized_path}")
+    
+    return manager.list_directory(normalized_path)
+
+@directories_router.delete("/{path:path}")
+async def delete_directory(
+    path: str = Path(..., description="The path of the directory to delete"),
+    recursive: bool = Query(False, description="Whether to delete recursively"),
+    manager: MetadataManager = Depends(get_metadata_manager)
+):
+    """
+    Delete a directory.
+    """
+    # Normalizar la ruta
+    path = "/" + path.strip("/")
+    
+    # Verificar que el directorio existe
     dir_info = manager.get_file_by_path(path)
     if not dir_info:
-        raise HTTPException(status_code=404, detail=f"Directory not found at path: {path}")
+        raise HTTPException(status_code=404, detail=f"Directory {path} not found")
     
     # Verificar que es un directorio
-    if dir_info.get('type') != 'directory':
-        raise HTTPException(status_code=400, detail=f"Path is not a directory: {path}")
+    if dir_info.type != FileType.DIRECTORY:
+        raise HTTPException(status_code=400, detail=f"{path} is not a directory")
     
-    # No permitir eliminar el directorio raíz
-    if path == "/" or path == "":
-        raise HTTPException(status_code=400, detail="Cannot delete root directory")
+    # Verificar que el directorio está vacío o se solicitó borrado recursivo
+    contents = manager.list_directory(path)
+    if contents.contents and not recursive:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Directory {path} is not empty. Delete contents first or use recursive deletion"
+        )
     
-    # Intentar eliminar el directorio
-    result = manager.delete_directory(path)
-    
-    if result > 0:
-        return {"success": True, "message": f"Directory {path} deleted successfully"}
-    else:
-        raise HTTPException(status_code=400, detail=f"Could not delete directory {path}. It may not be empty.")
+    # Eliminar el directorio
+    try:
+        success = manager.delete_directory(path, recursive=recursive)
+        if not success:
+            raise HTTPException(status_code=500, detail=f"Failed to delete directory {path}")
+        return {"message": f"Directory {path} deleted successfully"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/system/stats")
+async def get_system_stats():
+    """
+    Obtiene estadísticas generales del sistema.
+    """
+    try:
+        # Obtener DataNodes activos
+        datanodes = get_metadata_manager().list_datanodes(status="ACTIVE")
+        total_datanodes = len(get_metadata_manager().list_datanodes())
+        
+        # Obtener estadísticas de archivos y bloques
+        files_stats = get_metadata_manager().get_files_stats()
+        blocks_stats = get_metadata_manager().get_blocks_stats()
+        
+        return {
+            "namenode_active": True,  # Si responde, está activo
+            "total_files": files_stats.get("total_files", 0),
+            "total_blocks": blocks_stats.get("total_blocks", 0),
+            "active_datanodes": len(datanodes),
+            "total_datanodes": total_datanodes,
+            "replication_factor": get_metadata_manager().replication_factor
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))

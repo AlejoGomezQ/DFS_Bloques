@@ -26,11 +26,27 @@ class MetadataManager:
         self._ensure_root_directory_exists()
     
     def _ensure_root_directory_exists(self):
-        # Verificar si existe el directorio raíz con path "/"
-        root = self.db.get_file_by_path("/")
-        if not root:
-            # Crear el directorio raíz
-            self.db.create_file(name="/", path="/", file_type=FileType.DIRECTORY)
+        """
+        Asegura que el directorio raíz existe en el sistema.
+        """
+        try:
+            # Verificar si existe el directorio raíz con path "/"
+            root = self.db.get_file_by_path("/")
+            if not root:
+                # Crear el directorio raíz
+                root = self.db.create_file(
+                    name="",  # El directorio raíz no tiene nombre
+                    path="/",
+                    file_type=FileType.DIRECTORY,
+                    owner="system"
+                )
+                logging.info("Directorio raíz creado correctamente")
+            else:
+                logging.debug("El directorio raíz ya existe")
+            return root
+        except Exception as e:
+            logging.error(f"Error al crear el directorio raíz: {e}")
+            raise
     
     # Métodos para gestionar DataNodes
     
@@ -84,6 +100,35 @@ class MetadataManager:
     
     def update_datanode_status(self, node_id: str, status: str) -> bool:
         return self.db.update_datanode_status(node_id, status)
+    
+    def delete_datanode(self, node_id: str) -> bool:
+        """
+        Elimina un DataNode del sistema.
+        
+        Args:
+            node_id: ID del DataNode a eliminar
+            
+        Returns:
+            True si se eliminó correctamente, False si no
+        """
+        try:
+            # Verificar que el DataNode existe
+            datanode = self.get_datanode(node_id)
+            if not datanode:
+                return False
+            
+            # Eliminar el DataNode y sus referencias
+            success = self.db.delete_datanode(node_id)
+            
+            if success:
+                logging.info(f"DataNode {node_id} eliminado correctamente")
+            else:
+                logging.error(f"Error al eliminar el DataNode {node_id}")
+            
+            return success
+        except Exception as e:
+            logging.error(f"Error al eliminar el DataNode {node_id}: {str(e)}")
+            return False
     
     # Métodos para gestionar archivos y directorios
     
@@ -191,36 +236,68 @@ class MetadataManager:
         
         return self.db.delete_file(file_id)
     
-    def delete_directory(self, directory_path: str) -> bool:
-        dir_info = self.db.get_file_by_path(directory_path)
-        if not dir_info or dir_info["type"] != FileType.DIRECTORY:
+    def delete_directory(self, directory_path: str, recursive: bool = False) -> bool:
+        """
+        Elimina un directorio y todo su contenido.
+        
+        Args:
+            directory_path: Ruta del directorio a eliminar
+            recursive: Si es True, elimina el directorio y todo su contenido
+            
+        Returns:
+            bool: True si se eliminó correctamente, False en caso contrario
+        """
+        # Verificar que el directorio existe y es un directorio
+        dir_info = self.get_file_by_path(directory_path)
+        if not dir_info or dir_info.type != FileType.DIRECTORY:
             return False
         
-        # Obtener todos los archivos en el directorio y sus subdirectorios
-        files = self.db.list_directory(directory_path)
+        # Obtener el contenido del directorio
+        listing = self.list_directory(directory_path)
+        if listing.contents and not recursive:
+            # El directorio no está vacío y no es recursivo
+            return False
         
-        # Eliminar todos los bloques asociados a los archivos
-        for file_data in files:
-            if file_data["type"] == FileType.FILE:
-                blocks = self.db.get_file_blocks(file_data["file_id"])
-                for block in blocks:
-                    self.db.delete_block(block["block_id"])
+        if recursive:
+            # Eliminar recursivamente todo el contenido
+            for item in listing.contents:
+                if item.type == FileType.DIRECTORY:
+                    # Eliminar subdirectorios recursivamente
+                    self.delete_directory(item.path, recursive=True)
+                else:
+                    # Eliminar archivos
+                    self.delete_file(item.file_id)
         
-        # Eliminar el directorio y todo su contenido
-        return self.db.delete_directory(directory_path) > 0
+        # Eliminar el directorio actual
+        return self.db.delete_file(dir_info.file_id)
     
     # Métodos para gestionar bloques
     
-    def create_block(self, file_id: str, size: int, checksum: Optional[str] = None) -> str:
-        block_id = self.db.create_block(file_id, size, checksum)
+    def create_block(self, file_id: str, size: int, checksum: Optional[str] = None, block_id: Optional[str] = None) -> str:
+        """
+        Crea un nuevo bloque en el sistema.
         
-        # Actualizar el tamaño del archivo
-        file = self.db.get_file(file_id)
-        if file:
-            new_size = file["size"] + size
-            self.db.update_file(file_id, size=new_size)
+        Args:
+            file_id: ID del archivo al que pertenece el bloque
+            size: Tamaño del bloque en bytes
+            checksum: Checksum del bloque (opcional)
+            block_id: ID específico para el bloque (opcional)
+            
+        Returns:
+            str: ID del bloque creado
+        """
+        block_id = block_id or str(uuid.uuid4())
+        success = self.db.create_block(block_id, file_id, size, checksum)
         
-        return block_id
+        if success:
+            # Actualizar el tamaño del archivo
+            file = self.db.get_file(file_id)
+            if file:
+                new_size = file["size"] + size
+                self.db.update_file(file_id, size=new_size)
+            
+            return block_id
+        return None
     
     def get_block_info(self, block_id: str) -> Optional[BlockInfo]:
         block_data = self.db.get_block_with_locations(block_id)
@@ -294,14 +371,29 @@ class MetadataManager:
             Lista de bloques almacenados en el DataNode
         """
         blocks = self.db.get_blocks_by_datanode(node_id)
-        return [
-            BlockInfo(
+        result = []
+        
+        for block in blocks:
+            # Obtener todas las ubicaciones del bloque
+            locations = self.db.get_block_locations(block["block_id"])
+            block_locations = [
+                BlockLocation(
+                    block_id=block["block_id"],
+                    datanode_id=loc["datanode_id"],
+                    is_leader=loc["is_leader"]
+                )
+                for loc in locations
+            ]
+            
+            result.append(BlockInfo(
                 block_id=block["block_id"],
+                file_id=block["file_id"],
                 size=block["size"],
-                locations=block["locations"]
-            )
-            for block in blocks
-        ]
+                checksum=block.get("checksum"),
+                locations=block_locations
+            ))
+        
+        return result
     
     def update_block(self, block_id: str, **kwargs) -> bool:
         """Actualiza la información de un bloque en la base de datos.
@@ -451,3 +543,121 @@ class MetadataManager:
         except Exception as e:
             logging.error(f"Error deserializing metadata: {str(e)}")
             return False
+
+    def get_files_stats(self) -> Dict:
+        """
+        Obtiene estadísticas sobre los archivos en el sistema.
+        
+        Returns:
+            Dict con estadísticas de archivos
+        """
+        try:
+            total_files = self.db.count_files()
+            total_size = self.db.get_total_files_size()
+            
+            return {
+                "total_files": total_files,
+                "total_size": total_size
+            }
+        except Exception as e:
+            self.logger.error(f"Error al obtener estadísticas de archivos: {e}")
+            return {
+                "total_files": 0,
+                "total_size": 0
+            }
+
+    def get_blocks_stats(self) -> Dict:
+        """
+        Obtiene estadísticas sobre los bloques en el sistema.
+        
+        Returns:
+            Dict con estadísticas de bloques
+        """
+        try:
+            total_blocks = self.db.count_blocks()
+            total_size = self.db.get_total_blocks_size()
+            replicated_blocks = self.db.count_replicated_blocks()
+            
+            return {
+                "total_blocks": total_blocks,
+                "total_size": total_size,
+                "replicated_blocks": replicated_blocks,
+                "replication_factor": self.replication_factor
+            }
+        except Exception as e:
+            self.logger.error(f"Error al obtener estadísticas de bloques: {e}")
+            return {
+                "total_blocks": 0,
+                "total_size": 0,
+                "replicated_blocks": 0,
+                "replication_factor": self.replication_factor
+            }
+
+    def get_file_info(self, path: str) -> Optional[Dict]:
+        """
+        Obtiene información detallada de un archivo incluyendo sus bloques y ubicaciones.
+        
+        Args:
+            path: Ruta del archivo
+            
+        Returns:
+            Diccionario con la información del archivo o None si no existe
+        """
+        try:
+            # Obtener información básica del archivo
+            file_data = self.get_file_by_path(path)
+            if not file_data:
+                return None
+            
+            # Obtener información de los bloques
+            blocks = self.get_file_blocks(file_data.file_id)
+            block_info = []
+            
+            for block in blocks:
+                # Obtener ubicaciones del bloque
+                locations = self.db.get_block_locations(block.block_id)
+                active_locations = []
+                
+                for loc in locations:
+                    try:
+                        # Verificar si el DataNode está activo
+                        datanode = self.get_datanode(loc["datanode_id"])
+                        if datanode and datanode["status"] == "active":
+                            active_locations.append({
+                                "datanode_id": loc["datanode_id"],
+                                "is_leader": loc["is_leader"],
+                                "hostname": datanode["hostname"],
+                                "port": datanode["port"]
+                            })
+                    except Exception as e:
+                        print(f"Error al obtener información del DataNode {loc['datanode_id']}: {str(e)}")
+                        continue
+                
+                block_info.append({
+                    "block_id": block.block_id,
+                    "size": block.size,
+                    "checksum": block.checksum,
+                    "locations": active_locations
+                })
+            
+            # Construir la respuesta
+            return {
+                "file_id": file_data.file_id,
+                "name": file_data.name,
+                "path": file_data.path,
+                "type": file_data.type,
+                "size": file_data.size,
+                "created_at": file_data.created_at.isoformat() if file_data.created_at else None,
+                "modified_at": file_data.modified_at.isoformat() if file_data.modified_at else None,
+                "owner": file_data.owner,
+                "blocks": block_info,
+                "total_blocks": len(block_info),
+                "active_replicas": sum(len(block["locations"]) for block in block_info),
+                "is_healthy": all(len(block["locations"]) >= 1 for block in block_info)
+            }
+            
+        except Exception as e:
+            import traceback
+            error_detail = f"Error al obtener información del archivo {path}: {str(e)}\n{traceback.format_exc()}"
+            print(error_detail)
+            return None

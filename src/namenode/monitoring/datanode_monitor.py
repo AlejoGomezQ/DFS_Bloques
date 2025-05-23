@@ -9,40 +9,53 @@ from src.namenode.api.models import DataNodeStatus
 from src.namenode.replication.block_replicator import BlockReplicator
 
 class DataNodeMonitor:
-    def __init__(self, metadata_manager: MetadataManager, heartbeat_timeout: int = 30):
+    def __init__(self, metadata_manager: MetadataManager, heartbeat_timeout: int = 60, cleanup_interval: int = 3600, min_inactive_time: int = 7200):
         """
         Inicializa el monitor de DataNodes.
         
         Args:
             metadata_manager: Instancia del gestor de metadatos
             heartbeat_timeout: Tiempo en segundos para considerar un DataNode como caído
+            cleanup_interval: Intervalo en segundos para ejecutar la limpieza automática
+            min_inactive_time: Tiempo mínimo en segundos que un DataNode debe estar inactivo para ser eliminado
         """
         self.metadata_manager = metadata_manager
         self.heartbeat_timeout = heartbeat_timeout
+        self.cleanup_interval = cleanup_interval
+        self.min_inactive_time = min_inactive_time
         self.logger = logging.getLogger("DataNodeMonitor")
         self._stop_event = threading.Event()
         self._monitor_thread = None
+        self._cleanup_thread = None
         self.block_replicator = BlockReplicator(metadata_manager)
     
     def start(self):
-        """Inicia el hilo de monitoreo."""
+        """Inicia los hilos de monitoreo y limpieza."""
         if self._monitor_thread is not None and self._monitor_thread.is_alive():
             return
         
         self._stop_event.clear()
         self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
+        self._cleanup_thread = threading.Thread(target=self._cleanup_loop, daemon=True)
+        
         self._monitor_thread.start()
-        self.logger.info("DataNode monitor started")
+        self._cleanup_thread.start()
+        
+        self.logger.info("DataNode monitor and cleanup threads started")
     
     def stop(self):
-        """Detiene el hilo de monitoreo."""
+        """Detiene los hilos de monitoreo y limpieza."""
         if self._monitor_thread is None:
             return
         
         self._stop_event.set()
         self._monitor_thread.join()
+        if self._cleanup_thread:
+            self._cleanup_thread.join()
+        
         self._monitor_thread = None
-        self.logger.info("DataNode monitor stopped")
+        self._cleanup_thread = None
+        self.logger.info("DataNode monitor and cleanup threads stopped")
     
     def _monitor_loop(self):
         """Bucle principal de monitoreo."""
@@ -134,4 +147,35 @@ class DataNodeMonitor:
                 "last_heartbeat": None,
                 "time_since_heartbeat": None,
                 "is_healthy": False
-            } 
+            }
+    
+    def _cleanup_loop(self):
+        """Bucle de limpieza automática de DataNodes inactivos."""
+        while not self._stop_event.is_set():
+            try:
+                self._cleanup_inactive_datanodes()
+                # Esperar el intervalo de limpieza o hasta que se solicite la detención
+                self._stop_event.wait(self.cleanup_interval)
+            except Exception as e:
+                self.logger.error(f"Error in cleanup loop: {str(e)}")
+    
+    def _cleanup_inactive_datanodes(self):
+        """Elimina los DataNodes que han estado inactivos por más del tiempo mínimo."""
+        try:
+            datanodes = self.metadata_manager.list_datanodes()
+            current_time = datetime.now()
+            deleted_count = 0
+            
+            for datanode in datanodes:
+                if datanode.status == DataNodeStatus.INACTIVE and datanode.last_heartbeat:
+                    inactive_time = (current_time - datanode.last_heartbeat).total_seconds()
+                    if inactive_time >= self.min_inactive_time:
+                        self.metadata_manager.delete_datanode(datanode.node_id)
+                        deleted_count += 1
+                        self.logger.info(f"Auto-deleted inactive DataNode {datanode.node_id}")
+            
+            if deleted_count > 0:
+                self.logger.info(f"Automatic cleanup completed. Deleted {deleted_count} inactive DataNodes")
+        
+        except Exception as e:
+            self.logger.error(f"Error during automatic DataNode cleanup: {str(e)}") 

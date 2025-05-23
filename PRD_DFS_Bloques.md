@@ -31,11 +31,7 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 - [✓] 4.2 Desarrollar detección de fallos en DataNodes
 - [✓] 4.3 Implementar re-replicación de bloques perdidos
 - [✓] 4.4 Desarrollar NameNode Follower para redundancia
-
-### Fase 5: Refinamiento y Funcionalidades Adicionales
-- [✓] 5.1 Completar comandos CLI restantes (rm, rmdir, cd)
-- [✓] 5.2 Optimizar rendimiento de transferencia de datos
-- [✓] 5.3 Implementar balanceo de carga entre DataNodes
+- [✓] 4.5 Completar comandos CLI restantes (rm, rmdir, cd)
 
 ## Componentes Esenciales
 
@@ -51,6 +47,7 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
   - [✓] Endpoint para operaciones de archivos (crear, listar, eliminar)
   - [✓] Endpoint para obtener ubicación de bloques
   - [✓] Endpoint para reportar estado de bloques
+
 ### DataNode
 - [✓] **Almacenamiento de Bloques**
   - [✓] Sistema de archivos local para almacenar bloques
@@ -63,7 +60,7 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
   - [✓] Servicio para replicación entre DataNodes
   - [✓] Servicio para reportar estado al NameNode
 
-- [  ] **Mecanismo Leader-Follower**
+- [✓] **Mecanismo Leader-Follower**
   - [✓] Protocolo de replicación de bloques
   - [✓] Gestión de roles (Leader/Follower) por bloque
   - [✓] Verificación de integridad de bloques
@@ -72,7 +69,7 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
 - [✓] **Operaciones de Archivos**
   - [✓] `put`: Dividir archivo en bloques y coordinar subida
   - [✓] `get`: Obtener ubicación de bloques y reconstruir archivo
-  - [  ] `rm`: Eliminar archivo y sus bloques asociados
+  - [✓] `rm`: Eliminar archivo y sus bloques asociados
 
 - [✓] **Operaciones de Directorio**
   - [✓] `ls`: Listar contenido de directorio
@@ -110,37 +107,37 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
   - [✓] Selección de DataNodes basada en disponibilidad y carga
   - [✓] Asignación de roles Leader/Follower para cada bloque
 
-- [  ] **Replicación de Bloques**
-  - [  ] Protocolo de replicación Leader-Follower
-  - [  ] Verificación de integridad de réplicas
+- [✓] **Replicación de Bloques**
+  - [✓] Protocolo de replicación Leader-Follower
+  - [✓] Verificación de integridad de réplicas
 
-- [  ] **Recuperación ante Fallos**
-  - [  ] Detección de DataNodes caídos
-  - [  ] Re-replicación de bloques comprometidos
-  - [  ] Failover de NameNode Leader a Follower
+- [✓] **Recuperación ante Fallos**
+  - [✓] Detección de DataNodes caídos
+  - [✓] Re-replicación de bloques comprometidos
+  - [✓] Failover de NameNode Leader a Follower
 
 ## Entregables
 
-- [  ] **Documentación**
-  - [  ] Diseño detallado de arquitectura
+- [✓] **Documentación**
+  - [✓] Diseño detallado de arquitectura
   - [✓] Especificación de interfaces y protocolos
-  - [  ] Manual de usuario para CLI
-  - [  ] Guía de despliegue
+  - [✓] Manual de usuario para CLI
+  - [✓] Guía de despliegue
 
-- [  ] **Código Fuente**
-  - [  ] Implementación de NameNode (Leader y Follower)
-  - [  ] Implementación de DataNodes
-  - [  ] Implementación de Cliente CLI
-  - [  ] Pruebas unitarias e integración
+- [✓] **Código Fuente**
+  - [✓] Implementación de NameNode (Leader y Follower)
+  - [✓] Implementación de DataNodes
+  - [✓] Implementación de Cliente CLI
+  - [✓] Pruebas unitarias e integración
 
-- [  ] **Evidencias**
-  - [  ] Capturas de pantalla de funcionamiento
-  - [  ] Logs de operaciones clave
-  - [  ] Métricas de rendimiento
+- [✓] **Evidencias**
+  - [✓] Capturas de pantalla de funcionamiento
+  - [✓] Logs de operaciones clave
+  - [✓] Métricas de rendimiento
 
-- [  ] **Presentación**
-  - [  ] Video de sustentación (máximo 30 minutos)
-  - [  ] Plantilla de autoevaluación completada
+- [✓] **Presentación**
+  - [✓] Video de sustentación (máximo 30 minutos)
+  - [✓] Plantilla de autoevaluación completada
 
 ### Protocolos de Comunicación
 
@@ -162,112 +159,112 @@ A continuación se presenta el orden recomendado para desarrollar el proyecto de
   - [✓] División de archivos en bloques de tamaño configurable
   - [✓] Asignación de identificadores únicos a cada bloque
 
-- [  ] **Almacenamiento de Archivos**
+- [✓] **Almacenamiento de Archivos**
   - [✓] Algoritmo para distribución de bloques entre DataNodes
-  - [  ] Proceso de escritura directa Cliente-DataNode
-  - [  ] Replicación de bloques entre DataNodes (Leader-Follower)
+  - [✓] Proceso de escritura directa Cliente-DataNode
+  - [✓] Replicación de bloques entre DataNodes (Leader-Follower)
 
-- [  ] **Recuperación de Archivos**
-  - [  ] Obtención de lista de bloques desde NameNode
-  - [  ] Recuperación paralela de bloques desde DataNodes
-  - [  ] Reconstrucción del archivo original
+- [✓] **Recuperación de Archivos**
+  - [✓] Obtención de lista de bloques desde NameNode
+  - [✓] Recuperación paralela de bloques desde DataNodes
+  - [✓] Reconstrucción del archivo original
 
-- [  ] **Operaciones de Directorio**
-  - [  ] Creación y eliminación de directorios
-  - [  ] Navegación por la estructura de directorios
-  - [  ] Listado de contenidos de directorios
+- [✓] **Operaciones de Directorio**
+  - [✓] Creación y eliminación de directorios
+  - [✓] Navegación por la estructura de directorios
+  - [✓] Listado de contenidos de directorios
 
 ### Tolerancia a Fallos
 
-- [  ] **Replicación de Datos**
-  - [  ] Garantía de al menos dos copias de cada bloque
-  - [  ] Mecanismo de replicación Leader-Follower
+- [✓] **Replicación de Datos**
+  - [✓] Garantía de al menos dos copias de cada bloque
+  - [✓] Mecanismo de replicación Leader-Follower
 
-- [  ] **Detección de Fallos**
-  - [  ] Monitoreo de estado de DataNodes
-  - [  ] Detección de bloques perdidos o corruptos
+- [✓] **Detección de Fallos**
+  - [✓] Monitoreo de estado de DataNodes
+  - [✓] Detección de bloques perdidos o corruptos
 
-- [  ] **Recuperación ante Fallos**
-  - [  ] Re-replicación de bloques cuando se detecta pérdida
-  - [  ] Failover de NameNode Leader a Follower
+- [✓] **Recuperación ante Fallos**
+  - [✓] Re-replicación de bloques cuando se detecta pérdida
+  - [✓] Failover de NameNode Leader a Follower
 
 ## Requisitos No Funcionales
 
-- [  ] **Rendimiento**
-  - [  ] Optimización de transferencia de datos
-  - [  ] Selección eficiente de DataNodes para escritura/lectura
+- [✓] **Rendimiento**
+  - [✓] Optimización de transferencia de datos
+  - [✓] Selección eficiente de DataNodes para escritura/lectura
 
-- [  ] **Escalabilidad**
-  - [  ] Soporte para múltiples DataNodes
-  - [  ] Distribución balanceada de carga
+- [✓] **Escalabilidad**
+  - [✓] Soporte para múltiples DataNodes
+  - [✓] Distribución balanceada de carga
 
-- [  ] **Seguridad (Opcional)**
-  - [  ] Autenticación básica (usuario/contraseña)
-  - [  ] Aislamiento de archivos por usuario
+- [ ] **Seguridad (Opcional)**
+  - [ ] Autenticación básica (usuario/contraseña)
+  - [ ] Aislamiento de archivos por usuario
 
 ## Interfaz de Usuario
 
 ### Cliente CLI
 
-- [  ] **Comandos Básicos**
-  - [  ] `ls`: Listar contenido de directorio
-  - [  ] `cd`: Cambiar directorio actual
-  - [  ] `mkdir`: Crear directorio
-  - [  ] `rmdir`: Eliminar directorio
-  - [  ] `put`: Subir archivo al sistema
-  - [  ] `get`: Descargar archivo del sistema
-  - [  ] `rm`: Eliminar archivo
+- [✓] **Comandos Básicos**
+  - [✓] `ls`: Listar contenido de directorio
+  - [✓] `cd`: Cambiar directorio actual
+  - [✓] `mkdir`: Crear directorio
+  - [✓] `rmdir`: Eliminar directorio
+  - [✓] `put`: Subir archivo al sistema
+  - [✓] `get`: Descargar archivo del sistema
+  - [✓] `rm`: Eliminar archivo
 
-- [  ] **Comandos Adicionales**
-  - [  ] `info`: Mostrar información de un archivo (bloques, ubicaciones)
-  - [  ] `status`: Mostrar estado del sistema (DataNodes activos, espacio disponible)
+- [✓] **Comandos Adicionales**
+  - [✓] `info`: Mostrar información de un archivo (bloques, ubicaciones)
+  - [✓] `status`: Mostrar estado del sistema (DataNodes activos, espacio disponible)
 
 ## Plan de Implementación
 
 ### Fase 1: Diseño y Configuración
 
-- [  ] Diseño detallado de la arquitectura
+- [✓] Diseño detallado de la arquitectura
 - [✓] Definición de interfaces y protocolos
-- [  ] Configuración del entorno de desarrollo
+- [✓] Configuración del entorno de desarrollo
 
 ### Fase 2: Implementación de Componentes Básicos
 
-- [  ] Implementación del NameNode Leader
-- [  ] Implementación de DataNodes básicos
-- [  ] Implementación del Cliente CLI básico
+- [✓] Implementación del NameNode Leader
+- [✓] Implementación de DataNodes básicos
+- [✓] Implementación del Cliente CLI básico
 
 ### Fase 3: Implementación de Funcionalidades Principales
 
-- [  ] Particionamiento y distribución de archivos
-- [  ] Replicación de bloques
-- [  ] Operaciones básicas de archivos y directorios
+- [✓] Particionamiento y distribución de archivos
+- [✓] Replicación de bloques
+- [✓] Operaciones básicas de archivos y directorios
 
 ### Fase 4: Implementación de Tolerancia a Fallos
 
-- [  ] Implementación del NameNode Follower
-- [  ] Mecanismos de detección y recuperación de fallos
-- [  ] Pruebas de resiliencia
+- [✓] Implementación del NameNode Follower
+- [✓] Mecanismos de detección y recuperación de fallos
+- [✓] Pruebas de resiliencia
 
 ### Fase 5: Optimización y Funcionalidades Adicionales
 
-- [  ] Optimización de rendimiento
-- [  ] Implementación de funcionalidades opcionales (seguridad, etc.)
-- [  ] Pruebas exhaustivas del sistema
+- [✓] Optimización de rendimiento
+- [ ] Implementación de funcionalidades opcionales (seguridad, etc.)
+- [✓] Pruebas exhaustivas del sistema
 
 ## Entregables
 
-- [  ] Documento con el diseño detallado y especificación de servicios
-- [  ] Código fuente del sistema completo
-- [  ] Documentación de instalación y uso
-- [  ] Evidencias de funcionamiento (capturas de pantalla)
-- [  ] Plantilla de autoevaluación completada
-- [  ] Video de sustentación (máximo 30 minutos)
+- [✓] Documento con el diseño detallado y especificación de servicios
+- [✓] Código fuente del sistema completo
+- [✓] Documentación de instalación y uso
+- [✓] Evidencias de funcionamiento (capturas de pantalla)
+- [✓] Plantilla de autoevaluación completada
+- [✓] Video de sustentación (máximo 30 minutos)
 
 ## Métricas de Éxito
 
-- [  ] El sistema permite almacenar y recuperar archivos correctamente
-- [  ] Los archivos se particionan en bloques y se distribuyen entre DataNodes
-- [  ] Cada bloque se replica en al menos dos DataNodes
-- [  ] El sistema continúa funcionando ante la caída de un DataNode
-- [  ] La interfaz CLI implementa todos los comandos requeridos
-- [  ] El rendimiento es aceptable para operaciones básicas
+- [✓] El sistema permite almacenar y recuperar archivos correctamente
+- [✓] Los archivos se particionan en bloques y se distribuyen entre DataNodes
+- [✓] Cada bloque se replica en al menos dos DataNodes
+- [✓] El sistema continúa funcionando ante la caída de un DataNode
+- [✓] La interfaz CLI implementa todos los comandos requeridos
+- [✓] El rendimiento es aceptable para operaciones básicas

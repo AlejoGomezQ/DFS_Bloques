@@ -11,7 +11,7 @@ class DataNodeRegistration:
                  hostname: str, 
                  port: int,
                  storage_capacity: int,
-                 registration_interval: int = 60):
+                 registration_interval: int = 10):
         self.namenode_url = namenode_url
         self.node_id = node_id
         self.hostname = hostname

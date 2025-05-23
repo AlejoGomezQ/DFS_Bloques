@@ -6,22 +6,19 @@ import os
 import threading
 import argparse
 import uuid
+import sys
+import datetime
+
 # Importaciones absolutas en lugar de relativas
 from src.namenode.api.routes import files_router, blocks_router, datanodes_router, directories_router
-from src.namenode.api.routes.balancer import router as balancer_router
-from src.namenode.api.models import ErrorResponse
+from src.namenode.api.models import ErrorResponse, FileType
 from src.namenode.metadata.manager import MetadataManager
 from src.namenode.monitoring.datanode_monitor import DataNodeMonitor
 from src.namenode.leader.leader_election import LeaderElection
-
-# Variable global para el gestor de metadatos
-_metadata_manager = None
-
-def get_metadata_manager():
-    global _metadata_manager
-    return _metadata_manager
+from src.namenode.api.dependencies import set_metadata_manager, get_metadata_manager
 from src.namenode.leader.namenode_service import serve as serve_grpc
 from src.namenode.sync.metadata_sync import MetadataSync
+from src.namenode.init_root import init_root_directory
 import uvicorn
 
 # Configurar logging
@@ -47,11 +44,10 @@ app.add_middleware(
 )
 
 # Register routers
-app.include_router(files_router, prefix="/files", tags=["Files"])
-app.include_router(blocks_router, prefix="/blocks", tags=["Blocks"])
-app.include_router(datanodes_router, prefix="/datanodes", tags=["DataNodes"])
-app.include_router(directories_router, prefix="/directories", tags=["Directories"])
-app.include_router(balancer_router, prefix="/balancer", tags=["LoadBalancer"])
+app.include_router(files_router)
+app.include_router(blocks_router)
+app.include_router(datanodes_router)
+app.include_router(directories_router)
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -67,113 +63,196 @@ async def global_exception_handler(request: Request, exc: Exception):
 async def health_check():
     return {"status": "healthy"}
 
+@app.delete("/datanodes/cleanup")
+async def cleanup_inactive_datanodes(min_inactive_time: int = 3600):
+    """
+    Elimina los DataNodes que han estado inactivos por más del tiempo especificado.
+    
+    Args:
+        min_inactive_time: Tiempo mínimo en segundos que un DataNode debe estar inactivo para ser eliminado (default: 1 hora)
+    """
+    try:
+        metadata_manager = get_metadata_manager()
+        datanodes = metadata_manager.list_datanodes()
+        current_time = datetime.datetime.now()
+        deleted_count = 0
+        
+        for datanode in datanodes:
+            if datanode.status == "inactive" and datanode.last_heartbeat:
+                inactive_time = (current_time - datanode.last_heartbeat).total_seconds()
+                if inactive_time >= min_inactive_time:
+                    metadata_manager.delete_datanode(datanode.node_id)
+                    deleted_count += 1
+                    logger.info(f"Deleted inactive DataNode {datanode.node_id}")
+        
+        return {
+            "message": f"Cleanup completed. Deleted {deleted_count} inactive DataNodes",
+            "deleted_count": deleted_count
+        }
+    except Exception as e:
+        logger.error(f"Error during DataNode cleanup: {e}")
+        raise
+
 # Variables globales para los componentes del sistema
+metadata_manager = None
 datanode_monitor = None
 leader_election = None
 metadata_sync = None
 grpc_server = None
-load_balancer = None
+
+def cleanup_ports():
+    """Intenta limpiar los puertos si están en uso."""
+    import socket
+    import time
+    
+    def try_bind_port(port):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        try:
+            sock.bind(('localhost', port))
+            sock.close()
+            return True
+        except:
+            return False
+    
+    # Intentar liberar puerto 8000
+    if not try_bind_port(8000):
+        logger.warning("Puerto 8000 en uso, intentando liberar...")
+        os.system('netstat -ano | findstr "8000" > temp.txt')
+        with open('temp.txt', 'r') as f:
+            for line in f:
+                if ':8000' in line:
+                    pid = line.strip().split()[-1]
+                    os.system(f'taskkill /F /PID {pid}')
+        os.remove('temp.txt')
+        time.sleep(1)
+    
+    # Intentar liberar puerto 50051
+    if not try_bind_port(50051):
+        logger.warning("Puerto 50051 en uso, intentando liberar...")
+        os.system('netstat -ano | findstr "50051" > temp.txt')
+        with open('temp.txt', 'r') as f:
+            for line in f:
+                if ':50051' in line:
+                    pid = line.strip().split()[-1]
+                    os.system(f'taskkill /F /PID {pid}')
+        os.remove('temp.txt')
+        time.sleep(1)
 
 @app.on_event("startup")
 async def startup_event():
-    global datanode_monitor, leader_election, metadata_sync, grpc_server, load_balancer
+    global metadata_manager, datanode_monitor, leader_election, metadata_sync, grpc_server
     
-    # Obtener configuración del entorno o usar valores predeterminados
-    node_id = os.environ.get("NAMENODE_ID", str(uuid.uuid4()))
-    hostname = os.environ.get("NAMENODE_HOST", "localhost")
-    rest_port = int(os.environ.get("NAMENODE_REST_PORT", "8000"))
-    grpc_port = int(os.environ.get("NAMENODE_GRPC_PORT", "50051"))
-    
-    # Inicializar el gestor de metadatos con el ID del nodo
-    global _metadata_manager
-    _metadata_manager = MetadataManager(node_id=node_id)
-    metadata_manager = _metadata_manager
-    
-    # Procesar nodos conocidos del entorno
-    known_nodes_str = os.environ.get("NAMENODE_KNOWN_NODES", "")
-    if known_nodes_str:
-        for node_info in known_nodes_str.split(","):
+    try:
+        # Limpiar puertos si están en uso
+        cleanup_ports()
+        
+        # Obtener configuración del entorno o usar valores predeterminados
+        node_id = os.environ.get("NAMENODE_ID", str(uuid.uuid4()))
+        hostname = os.environ.get("NAMENODE_HOST", "localhost")
+        rest_port = int(os.environ.get("NAMENODE_REST_PORT", "8000"))
+        grpc_port = int(os.environ.get("NAMENODE_GRPC_PORT", "50051"))
+        
+        # Inicializar el gestor de metadatos con el ID del nodo
+        metadata_manager = MetadataManager(node_id=node_id)
+        set_metadata_manager(metadata_manager)
+        
+        # Inicializar el directorio raíz
+        try:
+            init_root_directory(metadata_manager)
+        except Exception as e:
+            logger.error(f"Error al inicializar el directorio raíz: {e}")
+            raise
+        
+        # Procesar nodos conocidos del entorno
+        known_nodes_str = os.environ.get("NAMENODE_KNOWN_NODES", "")
+        if known_nodes_str:
+            for node_info in known_nodes_str.split(","):
+                try:
+                    node_parts = node_info.split(":")
+                    if len(node_parts) == 3:
+                        other_id, other_host, other_port = node_parts
+                        metadata_manager.add_known_node(other_id, other_host, int(other_port))
+                        logger.info(f"Added known node: {other_id} at {other_host}:{other_port}")
+                except Exception as e:
+                    logger.error(f"Error processing known node {node_info}: {str(e)}")
+        
+        # Inicializar el monitor de DataNodes
+        datanode_monitor = DataNodeMonitor(metadata_manager)
+        datanode_monitor.start()
+        logger.info("DataNode monitor started")
+        
+        # Inicializar el sistema de elección de líder con los nodos conocidos del gestor de metadatos
+        known_nodes = metadata_manager.get_known_nodes()
+        leader_election = LeaderElection(node_id, hostname, grpc_port)
+        
+        # Añadir nodos conocidos después de la inicialización
+        for node in known_nodes:
+            leader_election.add_node(node['id'], node['host'], node['port'])
+        
+        # Configurar callbacks para cambios de rol
+        leader_election.on_leader_elected = lambda: logger.info(f"NameNode {node_id} became leader")
+        leader_election.on_leader_lost = lambda: logger.info(f"NameNode {node_id} became follower")
+        
+        # Inicializar el servicio de sincronización de metadatos
+        metadata_sync = MetadataSync(metadata_manager)
+        
+        # Iniciar el servidor gRPC en un hilo separado
+        def start_grpc_server():
+            global grpc_server
             try:
-                node_parts = node_info.split(":")
-                if len(node_parts) == 3:
-                    other_id, other_host, other_port = node_parts
-                    metadata_manager.add_known_node(other_id, other_host, int(other_port))
-                    logger.info(f"Added known node: {other_id} at {other_host}:{other_port}")
+                grpc_server, _, _ = serve_grpc(node_id, hostname, grpc_port, metadata_manager, leader_election, metadata_sync)
+                grpc_server.wait_for_termination()
             except Exception as e:
-                logger.error(f"Error processing known node {node_info}: {str(e)}")
-    
-    # Inicializar el monitor de DataNodes
-    datanode_monitor = DataNodeMonitor(metadata_manager)
-    datanode_monitor.start()
-    logger.info("DataNode monitor started")
-    
-    # Inicializar el sistema de elección de líder con los nodos conocidos del gestor de metadatos
-    known_nodes = metadata_manager.get_known_nodes()
-    leader_election = LeaderElection(node_id, hostname, grpc_port, known_nodes=known_nodes)
-    
-    # Configurar callbacks para cambios de rol
-    leader_election.on_leader_elected = lambda: logger.info(f"NameNode {node_id} became leader")
-    leader_election.on_leader_lost = lambda: logger.info(f"NameNode {node_id} became follower")
-    
-    # Inicializar el servicio de sincronización de metadatos
-    metadata_sync = MetadataSync(metadata_manager)
-    
-    # Iniciar el servidor gRPC en un hilo separado
-    def start_grpc_server():
-        global grpc_server
-        grpc_server, _, _ = serve_grpc(node_id, hostname, grpc_port, metadata_manager, leader_election, metadata_sync)
-        grpc_server.wait_for_termination()
-    
-    grpc_thread = threading.Thread(target=start_grpc_server, daemon=True)
-    grpc_thread.start()
-    logger.info(f"NameNode gRPC server starting at {hostname}:{grpc_port}")
-    
-    # Iniciar el sistema de elección de líder y sincronización de metadatos
-    leader_election.start()
-    metadata_sync.start()
-    
-    # Inicializar y arrancar el balanceador de carga
-    from src.namenode.balancer.load_balancer import LoadBalancer
-    load_balancer = LoadBalancer(metadata_manager, auto_balance=True)
-    load_balancer.start()
-    logger.info(f"Load balancer started with threshold {load_balancer.balance_threshold} and check interval {load_balancer.check_interval}s")
-    
-    logger.info(f"NameNode {node_id} started with REST API at {hostname}:{rest_port} and gRPC at {hostname}:{grpc_port}")
+                logger.error(f"Error starting gRPC server: {e}")
+                sys.exit(1)
+        
+        grpc_thread = threading.Thread(target=start_grpc_server, daemon=True)
+        grpc_thread.start()
+        logger.info(f"NameNode gRPC server starting at {hostname}:{grpc_port}")
+        
+        # Iniciar el sistema de elección de líder y sincronización de metadatos
+        leader_election.start()
+        metadata_sync.start()
+        
+        logger.info(f"NameNode {node_id} started with REST API at {hostname}:{rest_port} and gRPC at {hostname}:{grpc_port}")
+    except Exception as e:
+        logger.error(f"Error during startup: {e}")
+        sys.exit(1)
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    global datanode_monitor, leader_election, metadata_sync, grpc_server, load_balancer
+    global metadata_manager, datanode_monitor, leader_election, metadata_sync, grpc_server
     
-    # Detener el monitor de DataNodes
-    if datanode_monitor:
-        datanode_monitor.stop()
-        logger.info("DataNode monitor stopped")
-    
-    # Detener el sistema de elección de líder
-    if leader_election:
-        leader_election.stop()
-        logger.info("Leader election system stopped")
-    
-    # Detener el servicio de sincronización de metadatos
-    if metadata_sync:
-        metadata_sync.stop()
-        logger.info("Metadata synchronization service stopped")
-    
-    # Detener el servidor gRPC
-    if grpc_server:
-        grpc_server.stop(0)  # 0 significa detener inmediatamente
-        logger.info("gRPC server stopped")
-    
-    # Detener el balanceador de carga
-    if load_balancer:
-        load_balancer.stop()
-        logger.info("Load balancer stopped")
-    
-    # Cerrar el gestor de metadatos
-    global _metadata_manager
-    if _metadata_manager:
-        _metadata_manager.close()
-        logger.info("Metadata manager closed")
+    try:
+        if datanode_monitor:
+            datanode_monitor.stop()
+            logger.info("DataNode monitor stopped")
+        
+        if leader_election:
+            leader_election.stop()
+            logger.info("Leader election system stopped")
+        
+        if metadata_sync:
+            metadata_sync.stop()
+            logger.info("Metadata synchronization service stopped")
+        
+        if grpc_server:
+            grpc_server.stop(0)
+            logger.info("gRPC server stopped")
+        
+        if metadata_manager:
+            metadata_manager.close()
+            logger.info("Metadata manager closed")
+    except Exception as e:
+        logger.error(f"Error during shutdown: {e}")
+
+def main():
+    try:
+        cleanup_ports()
+        uvicorn.run(app, host="0.0.0.0", port=8000)
+    except Exception as e:
+        logger.error(f"Error running server: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     # Configurar argumentos de línea de comandos
@@ -198,4 +277,4 @@ if __name__ == "__main__":
     
     # Iniciar el servidor FastAPI
     logger.info(f"Starting NameNode {args.id} with REST API at {args.host}:{args.rest_port} and gRPC at {args.host}:{args.grpc_port}")
-    uvicorn.run(app, host="0.0.0.0", port=args.rest_port)
+    main()

@@ -20,8 +20,29 @@ def signal_handler(sig, frame):
     """Manejador de señales para detener todos los procesos al salir."""
     print("\nDeteniendo todos los procesos...")
     for p in processes:
-        if p.poll() is None:  # Si el proceso sigue en ejecución
-            p.terminate()
+        try:
+            if p and p.poll() is None:  # Si el proceso sigue en ejecución
+                p.terminate()
+                p.wait(timeout=5)  # Esperar hasta 5 segundos a que termine
+        except:
+            try:
+                p.kill()  # Si no termina, forzar cierre
+            except:
+                pass
+    
+    # Limpiar archivos de bloqueo si existen
+    try:
+        import glob
+        import os
+        lock_files = glob.glob("data/datanode*/lock*")
+        for lock_file in lock_files:
+            try:
+                os.remove(lock_file)
+            except:
+                pass
+    except:
+        pass
+    
     sys.exit(0)
 
 def create_directories():
@@ -79,7 +100,7 @@ def start_datanodes():
             sys.executable, "-m", "src.datanode.main",
             "--node-id", f"datanode{i}",
             "--hostname", "localhost",
-            "--port", f"{5000 + i}",
+            "--port", f"{7000 + i}",
             "--storage-dir", f"./data/datanode{i}",
             "--namenode-url", "http://localhost:8000"
         ]
@@ -119,6 +140,31 @@ def start_cli():
     processes.append(process)
     return process
 
+def cleanup_environment():
+    """Limpia el entorno antes de iniciar."""
+    try:
+        # Verificar y matar procesos usando los puertos
+        import psutil
+        for proc in psutil.process_iter(['pid', 'name', 'connections']):
+            try:
+                for conn in proc.connections():
+                    if conn.laddr.port in [7001, 7002, 7003]:
+                        proc.kill()
+            except:
+                continue
+        
+        # Limpiar archivos de bloqueo
+        import glob
+        import os
+        lock_files = glob.glob("data/datanode*/lock*")
+        for lock_file in lock_files:
+            try:
+                os.remove(lock_file)
+            except:
+                pass
+    except:
+        pass
+
 def main():
     """Función principal."""
     parser = argparse.ArgumentParser(description="Iniciar el sistema DFS_Bloques")
@@ -130,6 +176,10 @@ def main():
     
     # Registrar el manejador de señales
     signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
+    
+    # Limpiar el entorno antes de iniciar
+    cleanup_environment()
     
     # Crear directorios necesarios
     create_directories()
@@ -151,4 +201,8 @@ def main():
             time.sleep(1)
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    finally:
+        # Asegurarse de que todos los procesos se detengan al salir
+        signal_handler(None, None)

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 import uuid
 from datetime import datetime
+import logging
 
 class MetadataDatabase:
     def __init__(self, db_path: str = None):
@@ -20,7 +21,7 @@ class MetadataDatabase:
     
     def get_connection(self):
         if self.connection is None:
-            self.connection = sqlite3.connect(self.db_path)
+            self.connection = sqlite3.connect(self.db_path, check_same_thread=False)
             self.connection.row_factory = sqlite3.Row
         return self.connection
     
@@ -151,6 +152,37 @@ class MetadataDatabase:
         conn.commit()
         return cursor.rowcount > 0
     
+    def delete_datanode(self, node_id: str) -> bool:
+        """
+        Elimina un DataNode y todas sus referencias en la base de datos.
+        
+        Args:
+            node_id: ID del DataNode a eliminar
+            
+        Returns:
+            True si se eliminó correctamente, False si no
+        """
+        conn = self.get_connection()
+        cursor = conn.cursor()
+        
+        try:
+            # Comenzar transacción
+            cursor.execute('BEGIN TRANSACTION')
+            
+            # Eliminar las ubicaciones de bloques asociadas al DataNode
+            cursor.execute('DELETE FROM block_locations WHERE datanode_id = ?', (node_id,))
+            
+            # Eliminar el DataNode
+            cursor.execute('DELETE FROM datanodes WHERE node_id = ?', (node_id,))
+            
+            # Confirmar transacción
+            conn.commit()
+            return True
+        except Exception as e:
+            # Revertir transacción en caso de error
+            conn.rollback()
+            return False
+    
     # Métodos para gestionar archivos y directorios
     
     def create_file(self, name: str, path: str, file_type: str, size: int = 0, owner: Optional[str] = None) -> str:
@@ -193,22 +225,33 @@ class MetadataDatabase:
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        # Asegurarse de que el directorio termina con /
-        if not directory_path.endswith('/') and directory_path != '':
-            directory_path += '/'
+        # Normalizar el path del directorio
+        if directory_path == "":
+            directory_path = "/"
         
-        # Listar archivos y directorios directamente en el directorio especificado
-        if directory_path == '':
-            # Caso especial para el directorio raíz
+        # Verificar si el directorio existe
+        cursor.execute('SELECT * FROM files WHERE path = ?', (directory_path,))
+        directory = cursor.fetchone()
+        if not directory:
+            return []
+        
+        # Si es el directorio raíz, listar todos los archivos y directorios en la raíz
+        if directory_path == "/":
             cursor.execute('''
             SELECT * FROM files 
-            WHERE path = '' OR path NOT LIKE '%/%' OR (path LIKE '%/%' AND path NOT LIKE '%/%/%')
+            WHERE path != "/" AND (
+                path NOT LIKE "/%/%" OR  -- archivos y directorios directamente en la raíz
+                (path LIKE "/%/" AND path NOT LIKE "/%/%/%")  -- directorios en la raíz
+            )
             ''')
         else:
+            # Para otros directorios, listar su contenido directo
+            if not directory_path.endswith('/'):
+                directory_path += '/'
             cursor.execute('''
             SELECT * FROM files 
-            WHERE path LIKE ? AND path NOT LIKE ? AND path != ?
-            ''', (directory_path + '%', directory_path + '%/%', directory_path))
+            WHERE path LIKE ? AND path != ? AND path NOT LIKE ?
+            ''', (directory_path + '%', directory_path, directory_path + '%/%'))
         
         return [dict(row) for row in cursor.fetchall()]
     
@@ -244,33 +287,52 @@ class MetadataDatabase:
         conn = self.get_connection()
         cursor = conn.cursor()
         
-        # Asegurarse de que el directorio termina con /
-        if not directory_path.endswith('/') and directory_path != '':
-            directory_path += '/'
+        # Normalizar la ruta del directorio
+        directory_path = directory_path.rstrip('/')
+        if not directory_path:
+            directory_path = '/'
         
         # Eliminar todos los archivos y directorios bajo este directorio
-        cursor.execute('DELETE FROM files WHERE path LIKE ?', (directory_path + '%',))
-        
-        # Eliminar el directorio en sí
-        cursor.execute('DELETE FROM files WHERE path = ?', (directory_path,))
+        if directory_path == '/':
+            # Caso especial para el directorio raíz
+            cursor.execute('DELETE FROM files WHERE path != "/"')
+        else:
+            # Para otros directorios
+            cursor.execute('DELETE FROM files WHERE path LIKE ? OR path = ?', 
+                         (directory_path + '/%', directory_path))
         
         conn.commit()
         return cursor.rowcount
     
     # Métodos para gestionar bloques
     
-    def create_block(self, file_id: str, size: int, checksum: Optional[str] = None) -> str:
-        block_id = str(uuid.uuid4())
-        conn = self.get_connection()
-        cursor = conn.cursor()
+    def create_block(self, block_id: str, file_id: str, size: int, checksum: Optional[str] = None) -> bool:
+        """
+        Crea un nuevo bloque en la base de datos.
         
-        cursor.execute('''
-        INSERT INTO blocks (block_id, file_id, size, checksum)
-        VALUES (?, ?, ?, ?)
-        ''', (block_id, file_id, size, checksum))
-        
-        conn.commit()
-        return block_id
+        Args:
+            block_id: ID del bloque a crear
+            file_id: ID del archivo al que pertenece el bloque
+            size: Tamaño del bloque en bytes
+            checksum: Checksum del bloque (opcional)
+            
+        Returns:
+            bool: True si se creó correctamente, False en caso contrario
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            INSERT INTO blocks (block_id, file_id, size, checksum)
+            VALUES (?, ?, ?, ?)
+            ''', (block_id, file_id, size, checksum))
+            
+            conn.commit()
+            return True
+        except Exception as e:
+            logging.error(f"Error creating block: {str(e)}")
+            return False
     
     def get_block(self, block_id: str) -> Optional[Dict[str, Any]]:
         conn = self.get_connection()
