@@ -9,25 +9,27 @@ from src.namenode.metadata.manager import MetadataManager
 from src.common.proto import namenode_pb2, namenode_pb2_grpc
 
 class MetadataSync:
-    def __init__(self, metadata_manager: MetadataManager, sync_interval: int = 5):
+    def __init__(self, node_id: str, metadata_manager: MetadataManager, sync_interval: int = 60):
         """
         Inicializa el servicio de sincronización de metadatos.
         
         Args:
-            metadata_manager: Instancia del gestor de metadatos
-            sync_interval: Intervalo entre sincronizaciones en segundos
+            node_id: ID único del nodo
+            metadata_manager: Gestor de metadatos
+            sync_interval: Intervalo de sincronización en segundos
         """
+        self.node_id = node_id
         self.metadata_manager = metadata_manager
         self.sync_interval = sync_interval
+        self.logger = logging.getLogger("MetadataSync")
         self._stop_event = threading.Event()
         self._sync_thread = None
-        self.logger = logging.getLogger("MetadataSync")
         
         # Callbacks
         self.on_sync_complete: Optional[Callable] = None
     
     def start(self):
-        """Inicia el proceso de sincronización."""
+        """Inicia el hilo de sincronización."""
         if self._sync_thread is not None and self._sync_thread.is_alive():
             return
         
@@ -37,7 +39,7 @@ class MetadataSync:
         self.logger.info("Metadata sync service started")
     
     def stop(self):
-        """Detiene el proceso de sincronización."""
+        """Detiene el hilo de sincronización."""
         if self._sync_thread is None:
             return
         
@@ -50,10 +52,12 @@ class MetadataSync:
         """Bucle principal de sincronización."""
         while not self._stop_event.is_set():
             try:
-                self._sync_metadata()
+                # Por ahora solo registramos que el servicio está activo
+                self.logger.debug("Metadata sync service running")
                 time.sleep(self.sync_interval)
             except Exception as e:
                 self.logger.error(f"Error in sync loop: {str(e)}")
+                time.sleep(5)  # Esperar un poco antes de reintentar
     
     def _sync_metadata(self):
         """Sincroniza los metadatos con otros NameNodes."""

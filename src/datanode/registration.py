@@ -134,3 +134,32 @@ class DataNodeRegistration:
         heartbeat_thread = threading.Thread(target=heartbeat_loop, daemon=True)
         heartbeat_thread.start()
         return heartbeat_thread
+
+    def send_heartbeat(self):
+        """
+        Envía un heartbeat al NameNode con información actualizada del DataNode.
+        """
+        try:
+            # Obtener estadísticas de almacenamiento
+            storage_stats = self.storage_manager.get_storage_stats()
+            
+            # Preparar información de bloques
+            blocks_info = {}
+            for block_id, block_data in self.storage_manager.blocks.items():
+                blocks_info[block_id] = {
+                    'size': block_data['size'],
+                    'checksum': block_data.get('checksum')
+                }
+            
+            # Enviar heartbeat
+            response = self.namenode_client.send_heartbeat(
+                self.node_id,
+                storage_stats['available_space'],
+                blocks_info
+            )
+            
+            self.logger.info("Heartbeat sent successfully")
+            return True
+        except Exception as e:
+            self.logger.error(f"Error sending heartbeat: {e}")
+            return False

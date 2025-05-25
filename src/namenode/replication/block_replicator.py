@@ -8,7 +8,7 @@ from src.namenode.api.models import BlockInfo, DataNodeInfo
 from src.common.proto import datanode_pb2, datanode_pb2_grpc
 
 class BlockReplicator:
-    def __init__(self, metadata_manager: MetadataManager, replication_factor: int = 2):
+    def __init__(self, metadata_manager: MetadataManager, replication_factor: int = 3):
         """
         Inicializa el replicador de bloques.
         
@@ -41,7 +41,8 @@ class BlockReplicator:
             # Obtener los DataNodes activos que tienen el bloque
             active_locations = [
                 loc for loc in block_info.locations 
-                if loc.datanode_id != failed_node_id
+                if loc.datanode_id != failed_node_id and 
+                self.metadata_manager.get_datanode(loc.datanode_id).status == DataNodeStatus.ACTIVE.value
             ]
             
             if not active_locations:
@@ -61,7 +62,7 @@ class BlockReplicator:
                 return False
             
             # Seleccionar un nuevo DataNode destino
-            target_datanode = self._select_target_datanode(block_info.size)
+            target_datanode = self._select_target_datanode(block_info.size, [loc.datanode_id for loc in block_info.locations])
             if not target_datanode:
                 self.logger.error("No suitable target DataNode found")
                 return False
@@ -80,6 +81,8 @@ class BlockReplicator:
                     datanode_id=target_datanode.node_id,
                     is_leader=False
                 )
+                # Eliminar la ubicación del nodo fallido
+                self.metadata_manager.remove_block_location(block_id, failed_node_id)
                 self.logger.info(f"Block {block_id} successfully re-replicated to {target_datanode.node_id}")
                 return True
             else:
@@ -90,12 +93,13 @@ class BlockReplicator:
             self.logger.error(f"Error handling block replication: {str(e)}")
             return False
     
-    def _select_target_datanode(self, block_size: int) -> Optional[DataNodeInfo]:
+    def _select_target_datanode(self, block_size: int, excluded_nodes: List[str] = None) -> Optional[DataNodeInfo]:
         """
         Selecciona un DataNode adecuado para almacenar el bloque.
         
         Args:
             block_size: Tamaño del bloque en bytes
+            excluded_nodes: Lista de IDs de DataNodes a excluir
             
         Returns:
             Optional[DataNodeInfo]: DataNode seleccionado o None si no hay uno adecuado
@@ -103,10 +107,11 @@ class BlockReplicator:
         # Obtener todos los DataNodes activos
         datanodes = self.metadata_manager.list_datanodes(status="active")
         
-        # Filtrar los DataNodes que tienen suficiente espacio disponible
+        # Filtrar los DataNodes excluidos y los que tienen suficiente espacio disponible
         eligible_datanodes = [
             dn for dn in datanodes 
-            if dn.available_space >= block_size
+            if dn.available_space >= block_size and
+            (not excluded_nodes or dn.node_id not in excluded_nodes)
         ]
         
         if not eligible_datanodes:

@@ -2,8 +2,11 @@ import os
 import uuid
 import time
 import sys
+import hashlib
+import requests
 from typing import List, Dict, Optional, BinaryIO, Tuple
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import logging
 
 from src.client.namenode_client import NameNodeClient
 from src.client.datanode_client import DataNodeClient
@@ -15,7 +18,7 @@ class DFSClient:
     """
     Cliente principal para interactuar con el sistema de archivos distribuido.
     """
-    def __init__(self, namenode_url: str, block_size: int = None):
+    def __init__(self, namenode_url: str, block_size: Optional[int] = None):
         """
         Inicializa el cliente DFS.
         
@@ -25,12 +28,20 @@ class DFSClient:
         """
         self.namenode_client = NameNodeClient(namenode_url)
         self.block_distributor = BlockDistributor(self.namenode_client)
+        self.logger = logging.getLogger("DFSClient")
         
-        # Si no se especifica un tamaño de bloque, obtener el óptimo
+        # Si no se especifica un tamaño de bloque, usar un valor más pequeño para pruebas (4KB)
+        # o intentar obtener el óptimo del sistema
         if block_size is None:
-            block_size = self.block_distributor.get_optimal_block_size()
+            try:
+                self.block_size = self.block_distributor.get_optimal_block_size()
+            except:
+                # Si falla al obtener el tamaño óptimo, usar un valor predeterminado más pequeño para pruebas
+                self.block_size = 4 * 1024  # 4KB para pruebas (normalmente sería 64KB o más)
+        else:
+            self.block_size = block_size
         
-        self.file_splitter = FileSplitter(block_size)
+        self.file_splitter = FileSplitter(self.block_size)
     
     def put_file(self, local_path: str, dfs_path: str, max_workers: int = 4) -> bool:
         """
@@ -66,7 +77,7 @@ class DFSClient:
             # Dividir el archivo en bloques
             print(f"Dividiendo el archivo en bloques...")
             start_time = time.time()
-            blocks = self.file_splitter.split_file(local_path)
+            blocks = self._split_file_into_blocks(local_path)
             print(f"Archivo dividido en {len(blocks)} bloques en {time.time() - start_time:.2f} segundos")
             
             # Distribuir los bloques entre los DataNodes disponibles
@@ -104,34 +115,19 @@ class DFSClient:
             progress_bar_width = 50
             
             # Función para subir un bloque a un DataNode con reintentos
-            def upload_block_to_datanode(block, node_info, max_retries=2):
+            def upload_block_to_datanode(block, node_info, is_leader=False, max_retries=2):
                 failed_nodes = []
                 for attempt in range(max_retries):
                     try:
                         with DataNodeClient(node_info['hostname'], node_info['port']) as datanode:
-                            success = datanode.store_block(block['block_id'], block['data'])
+                            # Asegurarse de que el bloque tenga el file_id
+                            block['file_id'] = file_id
+                            block['checksum'] = ''  # Se calculará en _upload_block
+                            
+                            success = self._upload_block(local_path, block, [node_info], is_leader)
                             
                             if success:
-                                # Registrar el bloque y su ubicación en el NameNode
-                                block_info = {
-                                    'block_id': block['block_id'],
-                                    'file_id': file_id,
-                                    'size': block['size'],
-                                    'checksum': block['checksum'],
-                                    'locations': [{
-                                        'block_id': block['block_id'],
-                                        'datanode_id': node_info['node_id'],
-                                        'is_leader': node_info.get('is_leader', False)
-                                    }]
-                                }
-                                
-                                # Registrar el bloque en el NameNode
-                                try:
-                                    self.namenode_client._make_request('post', '/blocks/', block_info)
-                                    return True, block['block_id'], node_info['node_id']
-                                except Exception as e:
-                                    print(f"\nError al registrar bloque en NameNode: {str(e)}")
-                                    return False, block['block_id'], node_info['node_id']
+                                return True, block['block_id'], node_info['node_id']
                             
                             failed_nodes.append(node_info['node_id'])
                             
@@ -162,16 +158,18 @@ class DFSClient:
             upload_tasks = []
             for block in blocks:
                 block_id = block['block_id']
-                for node_info in block_distribution[block_id]:
-                    upload_tasks.append((block, node_info))
+                # Para cada bloque, marcar el primer DataNode como líder
+                for i, node_info in enumerate(block_distribution[block_id]):
+                    is_leader = (i == 0)  # El primer DataNode es el líder
+                    upload_tasks.append((block, node_info, is_leader))
             
             # Subir bloques en paralelo
             successful_uploads = 0
             failed_uploads = 0
             
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(upload_block_to_datanode, block, node_info) 
-                          for block, node_info in upload_tasks]
+                futures = [executor.submit(upload_block_to_datanode, block, node_info, is_leader) 
+                          for block, node_info, is_leader in upload_tasks]
                 
                 for future in as_completed(futures):
                     success, block_id, node_id = future.result()
@@ -224,7 +222,7 @@ class DFSClient:
         else:
             return f"{size_bytes / (1024 * 1024 * 1024):.2f} GB"
     
-    def get_file(self, dfs_path: str, local_path: str, max_workers: int = 4) -> bool:
+    def get_file(self, dfs_path: str, local_path: str, max_workers: int = 4, max_retries: int = 3) -> bool:
         """
         Descarga un archivo del sistema de archivos distribuido.
         
@@ -232,6 +230,7 @@ class DFSClient:
             dfs_path: Ruta del archivo en el DFS
             local_path: Ruta local donde se guardará el archivo
             max_workers: Número máximo de hilos para descargar bloques en paralelo
+            max_retries: Número máximo de reintentos para bloques fallidos
             
         Returns:
             True si la operación fue exitosa, False en caso contrario
@@ -265,47 +264,12 @@ class DFSClient:
             downloaded_blocks = 0
             progress_bar_width = 50
             
-            def download_block(block_info):
-                block_id = block_info.get('block_id')
-                locations = block_info.get('locations', [])
-                
-                if not locations:
-                    print(f"Error: No hay ubicaciones disponibles para el bloque {block_id}")
-                    return False, block_id, None
-                
-                # Intentar descargar de cada ubicación hasta que una funcione
-                errors = []
-                for location in locations:
-                    try:
-                        # Ya tenemos la información del DataNode en la ubicación
-                        hostname = location.get('hostname')
-                        port = location.get('port')
-                        
-                        if not hostname or not port:
-                            errors.append(f"Información incompleta del DataNode")
-                            continue
-                            
-                        print(f"Intentando descargar bloque {block_id} desde {hostname}:{port}")
-                        with DataNodeClient(hostname, port) as datanode:
-                            block_data = datanode.retrieve_block(block_id)
-                            if block_data:
-                                print(f"Bloque {block_id} descargado exitosamente ({len(block_data)} bytes)")
-                                return True, block_id, block_data
-                            else:
-                                errors.append(f"El DataNode devolvió datos vacíos")
-                    except Exception as e:
-                        errors.append(f"Error con DataNode {location.get('datanode_id')} - {str(e)}")
-                        continue
-                
-                print(f"No se pudo descargar el bloque {block_id}. Errores: {'; '.join(errors)}")
-                return False, block_id, None
-            
             # Descargar bloques en paralelo
             block_data_map = {}
             failed_blocks = []
             
             with ThreadPoolExecutor(max_workers=max_workers) as executor:
-                futures = [executor.submit(download_block, block) for block in blocks]
+                futures = [executor.submit(self.download_block, block) for block in blocks]
                 
                 for future in as_completed(futures):
                     success, block_id, data = future.result()
@@ -313,7 +277,7 @@ class DFSClient:
                     if success and data:
                         block_data_map[block_id] = data
                     else:
-                        failed_blocks.append(block_id)
+                        failed_blocks.append((block_id, next((block for block in blocks if block.get('block_id') == block_id), None)))
                     
                     # Actualizar la barra de progreso
                     downloaded_blocks += 1
@@ -327,10 +291,50 @@ class DFSClient:
             
             print("\n")
             
+            # Reintentar bloques fallidos
+            if failed_blocks and max_retries > 0:
+                print(f"Reintentando descargar {len(failed_blocks)} bloques fallidos...")
+                for retry in range(max_retries):
+                    still_failed = []
+                    
+                    for block_id, block in failed_blocks:
+                        # Actualizar información del bloque para obtener ubicaciones actualizadas
+                        try:
+                            updated_block = self.namenode_client.get_block_info(block_id)
+                            if updated_block and 'locations' in updated_block and updated_block['locations']:
+                                # Usar la información actualizada del bloque
+                                success, _, data = self.download_block(updated_block)
+                                if success and data:
+                                    block_data_map[block_id] = data
+                                    print(f"Bloque {block_id} descargado exitosamente en el reintento {retry+1}")
+                                    continue
+                            
+                            still_failed.append((block_id, block))
+                        except Exception as e:
+                            print(f"Error al reintentar bloque {block_id}: {e}")
+                            still_failed.append((block_id, block))
+                    
+                    # Actualizar la lista de bloques fallidos
+                    failed_blocks = still_failed
+                    
+                    if not failed_blocks:
+                        break
+                    
+                    if retry < max_retries - 1:
+                        print(f"Reintentando {len(failed_blocks)} bloques aún fallidos (intento {retry+2}/{max_retries})...")
+                        time.sleep(1)  # Pequeña pausa antes del siguiente reintento
+            
+            # Verificar si todavía hay bloques fallidos
             if failed_blocks:
+                failed_block_ids = [block_id for block_id, _ in failed_blocks if block_id]
                 print(f"Error: No se pudieron descargar {len(failed_blocks)} bloques")
-                print("Bloques fallidos:", failed_blocks)
-                return False
+                print("Bloques fallidos:", failed_block_ids)
+                
+                # Verificar si tenemos suficientes bloques para continuar
+                if len(block_data_map) / len(blocks) >= 0.9:  # Si tenemos al menos 90% de los bloques
+                    print("Advertencia: Algunos bloques no pudieron ser recuperados, pero intentaremos reconstruir el archivo con los bloques disponibles.")
+                else:
+                    return False
             
             # Escribir los bloques en orden al archivo local
             print("Escribiendo bloques al archivo local...")
@@ -339,12 +343,20 @@ class DFSClient:
                     block_id = block.get('block_id')
                     if block_id in block_data_map:
                         f.write(block_data_map[block_id])
+                    else:
+                        print(f"Advertencia: Bloque {block_id} no disponible, se reemplazará con datos vacíos")
+                        # Reemplazar con datos vacíos del tamaño aproximado del bloque
+                        if 'size' in block:
+                            f.write(b'\0' * block.get('size', 0))
             
             print(f"Archivo descargado exitosamente en {local_path}")
+            if failed_blocks:
+                print("Advertencia: El archivo puede estar incompleto o corrupto debido a bloques faltantes.")
+                return False
             return True
             
         except Exception as e:
-            print(f"Error al descargar el archivo: {str(e)}")
+            print(f"Error al descargar el archivo: {e}")
             return False
     
     def delete_directory_recursive(self, dfs_path: str) -> bool:
@@ -481,3 +493,171 @@ class DFSClient:
         except Exception as e:
             print(f"Error al crear el directorio {directory_path}: {e}")
             return False
+
+    def _split_file_into_blocks(self, file_path: str) -> List[Dict]:
+        """
+        Divide un archivo en bloques.
+        
+        Args:
+            file_path: Ruta al archivo a dividir
+            
+        Returns:
+            Lista de diccionarios con información de los bloques
+        """
+        blocks = []
+        file_size = os.path.getsize(file_path)
+        
+        # Si el archivo es más pequeño que el tamaño de bloque, crear un solo bloque
+        if file_size <= self.block_size:
+            blocks.append({
+                'offset': 0,
+                'size': file_size,
+                'block_id': str(uuid.uuid4())
+            })
+            return blocks
+        
+        # Dividir el archivo en bloques
+        offset = 0
+        while offset < file_size:
+            remaining = file_size - offset
+            block_size = min(remaining, self.block_size)
+            
+            blocks.append({
+                'offset': offset,
+                'size': block_size,
+                'block_id': str(uuid.uuid4())
+            })
+            
+            offset += block_size
+        
+        return blocks
+
+    def _upload_block(self, file_path: str, block: Dict, datanodes: List[Dict], is_leader: bool = False) -> bool:
+        """
+        Sube un bloque a los DataNodes usando gRPC.
+        
+        Args:
+            file_path: Ruta al archivo
+            block: Información del bloque
+            datanodes: Lista de DataNodes donde subir el bloque
+            is_leader: Si es True, el DataNode es el líder
+            
+        Returns:
+            True si la subida fue exitosa
+        """
+        try:
+            # Leer el contenido del bloque
+            with open(file_path, 'rb') as f:
+                f.seek(block['offset'])
+                data = f.read(block['size'])
+            
+            # Calcular checksum
+            checksum = hashlib.md5(data).hexdigest()
+            
+            # Primero, crear el bloque en el NameNode
+            try:
+                # Preparar la información del bloque para el NameNode
+                block_info = {
+                    'block_id': block['block_id'],
+                    'file_id': block.get('file_id', ''),  # Asegurarse de que file_id esté disponible
+                    'size': block['size'],
+                    'checksum': checksum,
+                    'locations': []
+                }
+                
+                # Registrar el bloque en el NameNode
+                self.namenode_client._make_request('post', '/blocks/', block_info)
+            except Exception as e:
+                self.logger.error(f"Error registrando bloque en NameNode: {e}")
+                # Continuamos con el intento de subida, ya que el error podría ser que el bloque ya existe
+            
+            # Subir el bloque a cada DataNode usando gRPC
+            for datanode in datanodes:
+                try:
+                    with DataNodeClient(datanode['hostname'], datanode['port']) as datanode_client:
+                        success = datanode_client.store_block(block['block_id'], data)
+                        
+                        if not success:
+                            self.logger.error(f"Error uploading block to DataNode {datanode['node_id']}")
+                            return False
+                        
+                        # Registrar la ubicación del bloque en el NameNode
+                        self.namenode_client.add_block_location(
+                            block['block_id'],
+                            datanode['node_id'],
+                            is_leader=is_leader
+                        )
+                except Exception as e:
+                    self.logger.error(f"Error uploading block to DataNode {datanode['node_id']}: {e}")
+                    return False
+            
+            return True
+        except Exception as e:
+            self.logger.error(f"Error uploading block: {e}")
+            return False
+
+    def download_block(self, block_info):
+        block_id = block_info.get('block_id')
+        locations = block_info.get('locations', [])
+        
+        if not locations:
+            print(f"Error: No hay ubicaciones disponibles para el bloque {block_id}")
+            # Intentar obtener información actualizada del bloque directamente
+            try:
+                updated_block_info = self.namenode_client.get_block_info(block_id)
+                if updated_block_info and updated_block_info.get('locations'):
+                    locations = updated_block_info.get('locations')
+                    print(f"Recuperadas {len(locations)} ubicaciones para el bloque {block_id}")
+                else:
+                    print(f"No se pudieron recuperar ubicaciones para el bloque {block_id}")
+                    return False, block_id, None
+            except Exception as e:
+                print(f"Error al actualizar información del bloque {block_id}: {e}")
+                return False, block_id, None
+        
+        # Intentar descargar de cada ubicación hasta que una funcione
+        errors = []
+        for location in locations:
+            try:
+                # Obtener información completa del DataNode
+                datanode_id = location.get('datanode_id')
+                hostname = location.get('hostname')
+                port = location.get('port')
+                
+                if not datanode_id:
+                    errors.append("DataNode ID no disponible en la ubicación del bloque")
+                    continue
+                
+                if not hostname or not port:
+                    # Si no tenemos la información completa, intentar obtenerla del NameNode
+                    try:
+                        datanode_info = self.namenode_client.get_datanode(datanode_id)
+                        if not datanode_info:
+                            errors.append(f"No se pudo obtener información del DataNode {datanode_id}")
+                            continue
+                        
+                        hostname = datanode_info.get('hostname')
+                        port = datanode_info.get('port')
+                        
+                        if not hostname or not port:
+                            errors.append(f"Información incompleta del DataNode {datanode_id}")
+                            continue
+                    except Exception as e:
+                        errors.append(f"Error al obtener información del DataNode {datanode_id}: {e}")
+                        continue
+                
+                # Intentar descargar el bloque
+                print(f"Intentando descargar el bloque {block_id} desde {hostname}:{port}")
+                with DataNodeClient(hostname, port) as datanode:
+                    block_data = datanode.retrieve_block(block_id)
+                    if block_data:
+                        print(f"Bloque {block_id} descargado correctamente ({len(block_data)} bytes)")
+                        return True, block_id, block_data
+                    else:
+                        errors.append(f"El DataNode {datanode_id} ({hostname}:{port}) devolvió datos vacíos")
+            except Exception as e:
+                errors.append(f"Error con DataNode {datanode_id} ({hostname}:{port}): {str(e)}")
+                continue
+        
+        print(f"No se pudo descargar el bloque {block_id}. Errores: {'; '.join(errors)}")
+        return False, block_id, None

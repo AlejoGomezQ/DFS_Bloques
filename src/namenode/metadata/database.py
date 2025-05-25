@@ -40,11 +40,12 @@ class MetadataDatabase:
             node_id TEXT PRIMARY KEY,
             hostname TEXT NOT NULL,
             port INTEGER NOT NULL,
-            status TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
             storage_capacity INTEGER NOT NULL,
             available_space INTEGER NOT NULL,
-            last_heartbeat TIMESTAMP,
-            blocks_stored INTEGER DEFAULT 0
+            last_heartbeat TIMESTAMP NOT NULL,
+            blocks_stored INTEGER NOT NULL DEFAULT 0,
+            UNIQUE(hostname, port)
         )
         ''')
         
@@ -53,11 +54,11 @@ class MetadataDatabase:
         CREATE TABLE IF NOT EXISTS files (
             file_id TEXT PRIMARY KEY,
             name TEXT NOT NULL,
-            path TEXT NOT NULL,
+            path TEXT NOT NULL UNIQUE,
             type TEXT NOT NULL,
-            size INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            modified_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            size INTEGER NOT NULL DEFAULT 0,
+            created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+            modified_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
             owner TEXT
         )
         ''')
@@ -67,7 +68,7 @@ class MetadataDatabase:
         CREATE TABLE IF NOT EXISTS blocks (
             block_id TEXT PRIMARY KEY,
             file_id TEXT NOT NULL,
-            size INTEGER NOT NULL,
+            size INTEGER NOT NULL DEFAULT 0,
             checksum TEXT,
             FOREIGN KEY (file_id) REFERENCES files (file_id) ON DELETE CASCADE
         )
@@ -76,10 +77,10 @@ class MetadataDatabase:
         # Tabla para almacenar ubicaciones de bloques en DataNodes
         cursor.execute('''
         CREATE TABLE IF NOT EXISTS block_locations (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
             block_id TEXT NOT NULL,
             datanode_id TEXT NOT NULL,
-            is_leader BOOLEAN DEFAULT 0,
+            is_leader BOOLEAN NOT NULL DEFAULT 0,
+            PRIMARY KEY (block_id, datanode_id),
             FOREIGN KEY (block_id) REFERENCES blocks (block_id) ON DELETE CASCADE,
             FOREIGN KEY (datanode_id) REFERENCES datanodes (node_id) ON DELETE CASCADE
         )
@@ -92,21 +93,45 @@ class MetadataDatabase:
         cursor.execute('CREATE INDEX IF NOT EXISTS idx_block_locations_datanode_id ON block_locations (datanode_id)')
         
         conn.commit()
+        logging.info("Database initialized successfully")
     
     # Métodos para gestionar DataNodes
     
     def register_datanode(self, hostname: str, port: int, storage_capacity: int, available_space: int) -> str:
-        node_id = str(uuid.uuid4())
-        conn = self.get_connection()
-        cursor = conn.cursor()
+        """
+        Registra un nuevo DataNode en la base de datos.
         
-        cursor.execute('''
-        INSERT INTO datanodes (node_id, hostname, port, status, storage_capacity, available_space, last_heartbeat)
-        VALUES (?, ?, ?, ?, ?, ?, ?)
-        ''', (node_id, hostname, port, 'active', storage_capacity, available_space, datetime.now()))
-        
-        conn.commit()
-        return node_id
+        Args:
+            hostname: Hostname del DataNode
+            port: Puerto del DataNode
+            storage_capacity: Capacidad total de almacenamiento
+            available_space: Espacio disponible actual
+            
+        Returns:
+            str: ID del DataNode registrado
+        """
+        try:
+            node_id = str(uuid.uuid4())
+            current_time = datetime.now()
+            
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            INSERT INTO datanodes (
+                node_id, hostname, port, status, storage_capacity,
+                available_space, last_heartbeat, blocks_stored
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''', (
+                node_id, hostname, port, 'active', storage_capacity,
+                available_space, current_time, 0
+            ))
+            
+            conn.commit()
+            return node_id
+        except Exception as e:
+            logging.error(f"Error registering DataNode: {e}")
+            raise
     
     def get_datanode(self, node_id: str) -> Optional[Dict[str, Any]]:
         conn = self.get_connection()
@@ -131,26 +156,60 @@ class MetadataDatabase:
         return [dict(row) for row in cursor.fetchall()]
     
     def update_datanode_heartbeat(self, node_id: str, available_space: int) -> bool:
-        conn = self.get_connection()
-        cursor = conn.cursor()
+        """
+        Actualiza el heartbeat y el espacio disponible de un DataNode.
         
-        cursor.execute('''
-        UPDATE datanodes 
-        SET last_heartbeat = ?, available_space = ? 
-        WHERE node_id = ?
-        ''', (datetime.now(), available_space, node_id))
-        
-        conn.commit()
-        return cursor.rowcount > 0
+        Args:
+            node_id: ID del DataNode
+            available_space: Espacio disponible actual
+            
+        Returns:
+            bool: True si la actualización fue exitosa
+        """
+        try:
+            current_time = datetime.now()
+            
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            UPDATE datanodes 
+            SET last_heartbeat = ?, available_space = ?, status = 'active'
+            WHERE node_id = ?
+            ''', (current_time, available_space, node_id))
+            
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            logging.error(f"Error updating DataNode heartbeat: {e}")
+            return False
     
     def update_datanode_status(self, node_id: str, status: str) -> bool:
-        conn = self.get_connection()
-        cursor = conn.cursor()
+        """
+        Actualiza el estado de un DataNode.
         
-        cursor.execute('UPDATE datanodes SET status = ? WHERE node_id = ?', (status, node_id))
-        
-        conn.commit()
-        return cursor.rowcount > 0
+        Args:
+            node_id: ID del DataNode
+            status: Nuevo estado
+            
+        Returns:
+            bool: True si la actualización fue exitosa
+        """
+        try:
+            conn = self.get_connection()
+            cursor = conn.cursor()
+            
+            cursor.execute('''
+            UPDATE datanodes 
+            SET status = ?
+            WHERE node_id = ?
+            ''', (status.lower(), node_id))
+            
+            conn.commit()
+            return cursor.rowcount > 0
+        except Exception as e:
+            logging.error(f"Error updating DataNode status: {e}")
+            return False
     
     def delete_datanode(self, node_id: str) -> bool:
         """
@@ -507,3 +566,82 @@ class MetadataDatabase:
         cursor.execute('SELECT * FROM files')
         
         return [dict(row) for row in cursor.fetchall()]
+
+    def count_files(self) -> int:
+        """
+        Cuenta el número total de archivos (excluyendo directorios).
+        """
+        try:
+            cursor = self.get_connection().cursor()
+            cursor.execute("SELECT COUNT(*) FROM files WHERE type = 'file'")
+            count = cursor.fetchone()[0]
+            cursor.close()
+            return count
+        except Exception as e:
+            logging.error(f"Error contando archivos: {e}")
+            return 0
+
+    def count_blocks(self) -> int:
+        """
+        Cuenta el número total de bloques.
+        """
+        try:
+            cursor = self.get_connection().cursor()
+            cursor.execute("SELECT COUNT(*) FROM blocks")
+            count = cursor.fetchone()[0]
+            cursor.close()
+            return count
+        except Exception as e:
+            logging.error(f"Error contando bloques: {e}")
+            return 0
+
+    def get_all_blocks(self) -> List[Dict]:
+        """
+        Obtiene todos los bloques almacenados.
+        """
+        try:
+            cursor = self.get_connection().cursor()
+            cursor.execute("""
+                SELECT b.block_id, b.file_id, b.size, b.checksum,
+                       GROUP_CONCAT(bl.datanode_id) as datanode_ids,
+                       GROUP_CONCAT(bl.is_leader) as is_leaders
+                FROM blocks b
+                LEFT JOIN block_locations bl ON b.block_id = bl.block_id
+                GROUP BY b.block_id
+            """)
+            blocks = []
+            for row in cursor.fetchall():
+                block = {
+                    'block_id': row[0],
+                    'file_id': row[1],
+                    'size': row[2],
+                    'checksum': row[3],
+                    'locations': []
+                }
+                if row[4] and row[5]:  # Si hay ubicaciones
+                    datanode_ids = row[4].split(',')
+                    is_leaders = row[5].split(',')
+                    block['locations'] = [
+                        {'datanode_id': dn_id, 'is_leader': bool(int(is_leader))}
+                        for dn_id, is_leader in zip(datanode_ids, is_leaders)
+                    ]
+                blocks.append(block)
+            cursor.close()
+            return blocks
+        except Exception as e:
+            logging.error(f"Error obteniendo todos los bloques: {e}")
+            return []
+
+    def get_total_blocks_size(self) -> int:
+        """
+        Obtiene el tamaño total de todos los bloques.
+        """
+        try:
+            cursor = self.get_connection().cursor()
+            cursor.execute("SELECT COALESCE(SUM(size), 0) FROM blocks")
+            total_size = cursor.fetchone()[0]
+            cursor.close()
+            return total_size
+        except Exception as e:
+            logging.error(f"Error obteniendo tamaño total de bloques: {e}")
+            return 0

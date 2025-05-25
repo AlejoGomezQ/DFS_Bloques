@@ -9,15 +9,15 @@ from src.namenode.api.models import DataNodeStatus
 from src.namenode.replication.block_replicator import BlockReplicator
 
 class DataNodeMonitor:
-    def __init__(self, metadata_manager: MetadataManager, heartbeat_timeout: int = 60, cleanup_interval: int = 3600, min_inactive_time: int = 7200):
+    def __init__(self, metadata_manager: MetadataManager, heartbeat_timeout: int = 30, cleanup_interval: int = 60, min_inactive_time: int = 120):
         """
         Inicializa el monitor de DataNodes.
         
         Args:
             metadata_manager: Instancia del gestor de metadatos
-            heartbeat_timeout: Tiempo en segundos para considerar un DataNode como caído
-            cleanup_interval: Intervalo en segundos para ejecutar la limpieza automática
-            min_inactive_time: Tiempo mínimo en segundos que un DataNode debe estar inactivo para ser eliminado
+            heartbeat_timeout: Tiempo en segundos para considerar un DataNode como caído (default 30s)
+            cleanup_interval: Intervalo en segundos para ejecutar la limpieza automática (default 60s)
+            min_inactive_time: Tiempo mínimo en segundos que un DataNode debe estar inactivo para ser eliminado (default 120s)
         """
         self.metadata_manager = metadata_manager
         self.heartbeat_timeout = heartbeat_timeout
@@ -73,13 +73,19 @@ class DataNodeMonitor:
         
         for datanode in datanodes:
             try:
-                if datanode.status == DataNodeStatus.ACTIVE:
-                    # Verificar si el último heartbeat está dentro del timeout
-                    if datanode.last_heartbeat:
-                        time_since_heartbeat = current_time - datanode.last_heartbeat
-                        if time_since_heartbeat > timedelta(seconds=self.heartbeat_timeout):
-                            self.logger.warning(f"DataNode {datanode.node_id} heartbeat timeout")
-                            self._handle_datanode_failure(datanode.node_id)
+                # Verificar si el último heartbeat está dentro del timeout
+                if datanode.last_heartbeat:
+                    time_since_heartbeat = (current_time - datanode.last_heartbeat).total_seconds()
+                    
+                    if time_since_heartbeat <= self.heartbeat_timeout:
+                        # Si el heartbeat está dentro del timeout, asegurar que esté activo
+                        if datanode.status.lower() != "active":
+                            self.logger.info(f"Reactivando DataNode {datanode.node_id}")
+                            self.metadata_manager.update_datanode_status(datanode.node_id, "active")
+                    elif datanode.status.lower() == "active":
+                        # Si el heartbeat expiró y está activo, marcarlo como inactivo
+                        self.logger.warning(f"DataNode {datanode.node_id} heartbeat timeout después de {time_since_heartbeat:.1f}s")
+                        self._handle_datanode_failure(datanode.node_id)
             except Exception as e:
                 self.logger.error(f"Error checking DataNode {datanode.node_id}: {str(e)}")
     
@@ -92,7 +98,7 @@ class DataNodeMonitor:
         """
         try:
             # Marcar el DataNode como inactivo
-            self.metadata_manager.update_datanode_status(node_id, DataNodeStatus.INACTIVE)
+            self.metadata_manager.update_datanode_status(node_id, DataNodeStatus.INACTIVE.value)
             self.logger.info(f"DataNode {node_id} marked as inactive")
             
             # Obtener los bloques almacenados en el DataNode
@@ -100,13 +106,18 @@ class DataNodeMonitor:
             
             # Re-replicar cada bloque afectado
             for block in blocks:
-                self.logger.info(f"Re-replicating block {block.block_id} due to DataNode {node_id} failure")
-                success = self.block_replicator.handle_block_replication(block.block_id, node_id)
-                
-                if success:
-                    self.logger.info(f"Block {block.block_id} successfully re-replicated")
+                # Verificar si el bloque necesita re-replicación
+                block_info = self.metadata_manager.get_block_info(block.block_id)
+                if block_info and len(block_info.locations) < self.block_replicator.replication_factor:
+                    self.logger.info(f"Re-replicating block {block.block_id} due to DataNode {node_id} failure")
+                    success = self.block_replicator.handle_block_replication(block.block_id, node_id)
+                    
+                    if success:
+                        self.logger.info(f"Block {block.block_id} successfully re-replicated")
+                    else:
+                        self.logger.error(f"Failed to re-replicate block {block.block_id}")
                 else:
-                    self.logger.error(f"Failed to re-replicate block {block.block_id}")
+                    self.logger.info(f"Block {block.block_id} has enough replicas, skipping re-replication")
         except Exception as e:
             self.logger.error(f"Error handling DataNode {node_id} failure: {str(e)}")
     

@@ -1,4 +1,5 @@
-from fastapi import FastAPI, Request, Depends
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, Depends, Query, Path, Body
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import logging
@@ -8,18 +9,19 @@ import argparse
 import uuid
 import sys
 import datetime
+import grpc
+from concurrent import futures
+import uvicorn
 
 # Importaciones absolutas en lugar de relativas
-from src.namenode.api.routes import files_router, blocks_router, datanodes_router, directories_router
-from src.namenode.api.models import ErrorResponse, FileType
+from src.namenode.api.routes import files_router, blocks_router, datanodes_router, directories_router, system_router
+from src.namenode.api.models import ErrorResponse, FileType, DataNodeInfo, DataNodeRegistration, HeartbeatRequest, FileMetadata, DirectoryListing
 from src.namenode.metadata.manager import MetadataManager
 from src.namenode.monitoring.datanode_monitor import DataNodeMonitor
-from src.namenode.leader.leader_election import LeaderElection
-from src.namenode.api.dependencies import set_metadata_manager, get_metadata_manager
-from src.namenode.leader.namenode_service import serve as serve_grpc
+from src.namenode.replication.block_replicator import BlockReplicator
 from src.namenode.sync.metadata_sync import MetadataSync
 from src.namenode.init_root import init_root_directory
-import uvicorn
+from src.namenode.api.dependencies import set_metadata_manager, get_metadata_manager
 
 # Configurar logging
 logging.basicConfig(
@@ -28,10 +30,76 @@ logging.basicConfig(
 )
 logger = logging.getLogger("NameNode")
 
+# Variables globales para los componentes del sistema
+metadata_manager = None
+datanode_monitor = None
+metadata_sync = None
+grpc_server = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Código que se ejecuta al inicio
+    global metadata_manager, datanode_monitor, metadata_sync, grpc_server
+    
+    try:
+        # Inicializar el gestor de metadatos
+        metadata_manager = MetadataManager(node_id=args.id)
+        # Configurar el metadata_manager como dependencia global
+        set_metadata_manager(metadata_manager)
+        
+        # Asegurar que existe el directorio raíz
+        init_root_directory(metadata_manager)
+        
+        # Iniciar el monitor de DataNodes
+        datanode_monitor = DataNodeMonitor(metadata_manager)
+        datanode_monitor.start()
+        logger.info("DataNode monitor started")
+        
+        # Iniciar el servidor gRPC
+        grpc_server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+        grpc_server.add_insecure_port(f'{args.host}:{args.grpc_port}')
+        grpc_server.start()
+        logger.info(f"NameNode gRPC server starting at {args.host}:{args.grpc_port}")
+        
+        # Iniciar el servicio de sincronización de metadatos
+        metadata_sync = MetadataSync(
+            node_id=args.id,
+            metadata_manager=metadata_manager
+        )
+        metadata_sync.start()
+        logger.info("Metadata sync service started")
+        
+        logger.info(f"NameNode {args.id} started with REST API at {args.host}:{args.rest_port} and gRPC at {args.host}:{args.grpc_port}")
+        
+        yield
+        
+        # Código que se ejecuta al apagar
+        if grpc_server:
+            grpc_server.stop(0)
+            logger.info("gRPC server stopped")
+        
+        if datanode_monitor:
+            datanode_monitor.stop()
+            logger.info("DataNode monitor stopped")
+        
+        if metadata_sync:
+            metadata_sync.stop()
+            logger.info("Metadata sync service stopped")
+        
+        if metadata_manager:
+            metadata_manager.close()
+            logger.info("Metadata manager closed")
+            
+    except Exception as e:
+        logger.error(f"Error during startup: {str(e)}")
+        raise
+
+# Crear la aplicación FastAPI con el nuevo sistema de lifespan
 app = FastAPI(
     title="DFS NameNode API",
     description="API for the Distributed File System NameNode",
-    version="0.1.0"
+    version="0.1.0",
+    lifespan=lifespan
 )
 
 # Configurar CORS
@@ -48,6 +116,7 @@ app.include_router(files_router)
 app.include_router(blocks_router)
 app.include_router(datanodes_router)
 app.include_router(directories_router)
+app.include_router(system_router, prefix="/system")
 
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
@@ -93,13 +162,6 @@ async def cleanup_inactive_datanodes(min_inactive_time: int = 3600):
         logger.error(f"Error during DataNode cleanup: {e}")
         raise
 
-# Variables globales para los componentes del sistema
-metadata_manager = None
-datanode_monitor = None
-leader_election = None
-metadata_sync = None
-grpc_server = None
-
 def cleanup_ports():
     """Intenta limpiar los puertos si están en uso."""
     import socket
@@ -138,118 +200,16 @@ def cleanup_ports():
         os.remove('temp.txt')
         time.sleep(1)
 
-@app.on_event("startup")
-async def startup_event():
-    global metadata_manager, datanode_monitor, leader_election, metadata_sync, grpc_server
-    
-    try:
-        # Limpiar puertos si están en uso
-        cleanup_ports()
-        
-        # Obtener configuración del entorno o usar valores predeterminados
-        node_id = os.environ.get("NAMENODE_ID", str(uuid.uuid4()))
-        hostname = os.environ.get("NAMENODE_HOST", "localhost")
-        rest_port = int(os.environ.get("NAMENODE_REST_PORT", "8000"))
-        grpc_port = int(os.environ.get("NAMENODE_GRPC_PORT", "50051"))
-        
-        # Inicializar el gestor de metadatos con el ID del nodo
-        metadata_manager = MetadataManager(node_id=node_id)
-        set_metadata_manager(metadata_manager)
-        
-        # Inicializar el directorio raíz
-        try:
-            init_root_directory(metadata_manager)
-        except Exception as e:
-            logger.error(f"Error al inicializar el directorio raíz: {e}")
-            raise
-        
-        # Procesar nodos conocidos del entorno
-        known_nodes_str = os.environ.get("NAMENODE_KNOWN_NODES", "")
-        if known_nodes_str:
-            for node_info in known_nodes_str.split(","):
-                try:
-                    node_parts = node_info.split(":")
-                    if len(node_parts) == 3:
-                        other_id, other_host, other_port = node_parts
-                        metadata_manager.add_known_node(other_id, other_host, int(other_port))
-                        logger.info(f"Added known node: {other_id} at {other_host}:{other_port}")
-                except Exception as e:
-                    logger.error(f"Error processing known node {node_info}: {str(e)}")
-        
-        # Inicializar el monitor de DataNodes
-        datanode_monitor = DataNodeMonitor(metadata_manager)
-        datanode_monitor.start()
-        logger.info("DataNode monitor started")
-        
-        # Inicializar el sistema de elección de líder con los nodos conocidos del gestor de metadatos
-        known_nodes = metadata_manager.get_known_nodes()
-        leader_election = LeaderElection(node_id, hostname, grpc_port)
-        
-        # Añadir nodos conocidos después de la inicialización
-        for node in known_nodes:
-            leader_election.add_node(node['id'], node['host'], node['port'])
-        
-        # Configurar callbacks para cambios de rol
-        leader_election.on_leader_elected = lambda: logger.info(f"NameNode {node_id} became leader")
-        leader_election.on_leader_lost = lambda: logger.info(f"NameNode {node_id} became follower")
-        
-        # Inicializar el servicio de sincronización de metadatos
-        metadata_sync = MetadataSync(metadata_manager)
-        
-        # Iniciar el servidor gRPC en un hilo separado
-        def start_grpc_server():
-            global grpc_server
-            try:
-                grpc_server, _, _ = serve_grpc(node_id, hostname, grpc_port, metadata_manager, leader_election, metadata_sync)
-                grpc_server.wait_for_termination()
-            except Exception as e:
-                logger.error(f"Error starting gRPC server: {e}")
-                sys.exit(1)
-        
-        grpc_thread = threading.Thread(target=start_grpc_server, daemon=True)
-        grpc_thread.start()
-        logger.info(f"NameNode gRPC server starting at {hostname}:{grpc_port}")
-        
-        # Iniciar el sistema de elección de líder y sincronización de metadatos
-        leader_election.start()
-        metadata_sync.start()
-        
-        logger.info(f"NameNode {node_id} started with REST API at {hostname}:{rest_port} and gRPC at {hostname}:{grpc_port}")
-    except Exception as e:
-        logger.error(f"Error during startup: {e}")
-        sys.exit(1)
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    global metadata_manager, datanode_monitor, leader_election, metadata_sync, grpc_server
-    
-    try:
-        if datanode_monitor:
-            datanode_monitor.stop()
-            logger.info("DataNode monitor stopped")
-        
-        if leader_election:
-            leader_election.stop()
-            logger.info("Leader election system stopped")
-        
-        if metadata_sync:
-            metadata_sync.stop()
-            logger.info("Metadata synchronization service stopped")
-        
-        if grpc_server:
-            grpc_server.stop(0)
-            logger.info("gRPC server stopped")
-        
-        if metadata_manager:
-            metadata_manager.close()
-            logger.info("Metadata manager closed")
-    except Exception as e:
-        logger.error(f"Error during shutdown: {e}")
-
 def main():
     try:
         cleanup_ports()
-        uvicorn.run(app, host="0.0.0.0", port=8000)
+        # Configurar el servidor uvicorn con el host y puerto correctos
+        uvicorn.run(
+            app,
+            host=args.host,
+            port=args.rest_port,
+            log_level="info"
+        )
     except Exception as e:
         logger.error(f"Error running server: {e}")
         sys.exit(1)

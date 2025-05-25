@@ -675,10 +675,19 @@ Opciones:
             # Obtener información de los bloques
             blocks_info = self.client.namenode_client.get_file_blocks(path)
             
+            # Obtener lista de DataNodes activos
+            active_datanodes = {
+                node.get('node_id'): node 
+                for node in self.client.namenode_client.list_datanodes(status='ACTIVE')
+            }
+            
             # Mostrar información
             print("\nInformación del archivo:")
             print(f"  Ruta: {path}")
-            print(f"  Tamaño: {self._format_size(file_info.get('size', 0))}")
+            
+            # Usar el tamaño total de los bloques como tamaño real del archivo
+            total_size = sum(block.get('size', 0) for block in blocks_info)
+            print(f"  Tamaño real: {self._format_size(total_size)}")
             print(f"  Creado: {file_info.get('created_at', 'N/A')}")
             print(f"  Modificado: {file_info.get('modified_at', 'N/A')}")
             
@@ -687,9 +696,26 @@ Opciones:
                 print(f"\n  Bloque: {block['block_id']}")
                 print(f"  Tamaño: {self._format_size(block.get('size', 0))}")
                 print("  Ubicaciones:")
+                
+                # Filtrar ubicaciones únicas y solo de nodos activos
+                unique_locations = {}
                 for location in block.get('locations', []):
-                    leader_status = "✓ (Leader)" if location.get('is_leader') else "✓"
-                    print(f"    - DataNode {location['datanode_id']}: {leader_status}")
+                    node_id = location.get('datanode_id')
+                    if node_id in active_datanodes and node_id not in unique_locations:
+                        unique_locations[node_id] = location
+                
+                if not unique_locations:
+                    print("    No hay ubicaciones disponibles en DataNodes activos")
+                else:
+                    for location in unique_locations.values():
+                        node_id = location.get('datanode_id')
+                        datanode = active_datanodes.get(node_id, {})
+                        leader_status = "(Leader)" if location.get('is_leader') else ""
+                        hostname = datanode.get('hostname', 'desconocido')
+                        port = datanode.get('port', 'N/A')
+                        print(f"    - DataNode {node_id} {leader_status}")
+                        print(f"      Host: {hostname}:{port}")
+                        print(f"      Estado: Activo")
         
         except Exception as e:
             print(f"Error al obtener información: {e}")
@@ -703,7 +729,13 @@ Opciones:
             datanodes = self.client.namenode_client.list_datanodes()
             
             # Obtener estadísticas del sistema
-            stats = self.client.namenode_client.get_system_stats()
+            try:
+                stats = self.client.namenode_client.get_system_stats()
+                namenode_active = True
+            except Exception as e:
+                print(f"Error al obtener estadísticas del sistema: {e}")
+                stats = {}
+                namenode_active = False
             
             print("\nEstado del Sistema de Archivos Distribuido")
             print("=" * 50)
@@ -711,7 +743,7 @@ Opciones:
             # Mostrar información del NameNode
             print("\nNameNode:")
             print(f"  URL: {self.client.namenode_client.base_url}")
-            print(f"  Estado: {'✓ Activo' if stats.get('namenode_active', False) else '✗ Inactivo'}")
+            print(f"  Estado: {'✓ Activo' if namenode_active else '✗ Inactivo'}")
             
             # Mostrar información de DataNodes
             print("\nDataNodes:")
@@ -720,20 +752,26 @@ Opciones:
             total_available = 0
             
             for node in datanodes:
-                status = node.get('status', 'UNKNOWN')
-                if status == 'ACTIVE':
+                # Verificar si el DataNode está activo
+                status = node.status.value if hasattr(node, 'status') else node.get('status', '').lower()
+                is_active = status == 'active'
+                if is_active:
                     active_nodes += 1
                 
-                capacity = node.get('storage_capacity', 0)
-                available = node.get('available_space', 0)
+                # Obtener capacidad y espacio disponible
+                capacity = node.storage_capacity if hasattr(node, 'storage_capacity') else node.get('storage_capacity', 0)
+                available = node.available_space if hasattr(node, 'available_space') else node.get('available_space', 0)
                 total_capacity += capacity
                 total_available += available
                 
-                print(f"\n  DataNode {node.get('node_id', 'N/A')}:")
-                print(f"    Estado: {'✓ Activo' if status == 'ACTIVE' else '✗ Inactivo'}")
+                # Obtener ID del nodo
+                node_id = node.node_id if hasattr(node, 'node_id') else node.get('node_id', 'N/A')
+                
+                print(f"\n  DataNode {node_id}:")
+                print(f"    Estado: {'✓ Activo' if is_active else '✗ Inactivo'}")
                 print(f"    Almacenamiento: {self._format_size(available)} libre de {self._format_size(capacity)}")
-                print(f"    Bloques almacenados: {node.get('blocks_stored', 0)}")
-                print(f"    Último heartbeat: {node.get('last_heartbeat', 'N/A')}")
+                print(f"    Bloques almacenados: {node.blocks_stored if hasattr(node, 'blocks_stored') else node.get('blocks_stored', 0)}")
+                print(f"    Último heartbeat: {node.last_heartbeat if hasattr(node, 'last_heartbeat') else node.get('last_heartbeat', 'N/A')}")
             
             # Mostrar estadísticas generales
             print("\nEstadísticas Generales:")
@@ -742,10 +780,17 @@ Opciones:
             print(f"  Espacio disponible: {self._format_size(total_available)}")
             print(f"  Archivos totales: {stats.get('total_files', 0)}")
             print(f"  Bloques totales: {stats.get('total_blocks', 0)}")
+            print(f"  Total instancias de bloques: {stats.get('total_block_instances', 0)}")
             print(f"  Factor de replicación: {stats.get('replication_factor', 2)}")
         
         except Exception as e:
             print(f"Error al obtener el estado del sistema: {e}")
+            # Aún así mostrar la información básica que podamos
+            print("\nEstado del Sistema de Archivos Distribuido")
+            print("=" * 50)
+            print("\nNameNode:")
+            print(f"  URL: {self.client.namenode_client.base_url}")
+            print("  Estado: ✗ Error al conectar")
     
     def _resolve_path(self, relative_path: str) -> str:
         """

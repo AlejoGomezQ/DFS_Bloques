@@ -20,7 +20,12 @@ class DataNodeClient:
     
     def connect(self):
         """Establece la conexión con el DataNode."""
-        self.channel = grpc.insecure_channel(f"{self.hostname}:{self.port}")
+        # Configurar opciones del canal con límites más grandes
+        options = [
+            ('grpc.max_send_message_length', 8 * 1024 * 1024),  # 8MB
+            ('grpc.max_receive_message_length', 8 * 1024 * 1024)  # 8MB
+        ]
+        self.channel = grpc.insecure_channel(f"{self.hostname}:{self.port}", options=options)
         self.stub = datanode_pb2_grpc.DataNodeServiceStub(self.channel)
         return self
     

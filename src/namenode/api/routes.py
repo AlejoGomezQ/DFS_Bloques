@@ -16,7 +16,8 @@ from src.namenode.api.models import (
     ErrorResponse,
     FileType,
     HeartbeatRequest,
-    BlockStatusInfo
+    BlockStatusInfo,
+    DataNodeStatus
 )
 from src.namenode.metadata.manager import MetadataManager
 from src.namenode.api.dependencies import get_metadata_manager
@@ -26,6 +27,14 @@ files_router = APIRouter(prefix="/files", tags=["Files"])
 blocks_router = APIRouter(prefix="/blocks", tags=["Blocks"])
 datanodes_router = APIRouter(prefix="/datanodes", tags=["DataNodes"])
 directories_router = APIRouter(prefix="/directories", tags=["Directories"])
+system_router = APIRouter(tags=["System"])  # Sin prefijo para que funcione con la ruta /system/stats
+
+# Registrar los routers
+app.include_router(files_router)
+app.include_router(blocks_router)
+app.include_router(datanodes_router)
+app.include_router(directories_router)
+app.include_router(system_router)
 
 # Files Endpoints
 @files_router.post("/", response_model=FileMetadata, status_code=201)
@@ -398,6 +407,8 @@ async def list_datanodes(status: Optional[str] = Query(None, description="Filter
     """
     List all registered DataNodes.
     """
+    if status:
+        status = status.lower()
     return manager.list_datanodes(status)
 
 @datanodes_router.get("/{node_id}", response_model=DataNodeInfo)
@@ -440,11 +451,10 @@ async def datanode_heartbeat(
         
         if not existing_block:
             # Si el bloque no existe, lo registramos como un bloque huérfano
-            # En una implementación completa, podríamos verificar si pertenece a algún archivo
             continue
         
         # Actualizar la ubicación del bloque
-        manager.add_block_location(block_id, node_id, False)  # Por ahora, no es líder
+        manager.add_block_location(block_id, node_id, False)
     
     return None
 
@@ -570,27 +580,40 @@ async def delete_directory(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/system/stats")
-async def get_system_stats():
+@system_router.get("/stats")
+async def get_system_stats(manager: MetadataManager = Depends(get_metadata_manager)):
     """
     Obtiene estadísticas generales del sistema.
     """
     try:
+        # Limpiar DataNodes inactivos primero
+        manager.cleanup_inactive_datanodes()
+        
         # Obtener DataNodes activos
-        datanodes = get_metadata_manager().list_datanodes(status="ACTIVE")
-        total_datanodes = len(get_metadata_manager().list_datanodes())
+        datanodes = manager.list_datanodes()
+        active_datanodes = [dn for dn in datanodes if dn.status == DataNodeStatus.ACTIVE]
         
         # Obtener estadísticas de archivos y bloques
-        files_stats = get_metadata_manager().get_files_stats()
-        blocks_stats = get_metadata_manager().get_blocks_stats()
+        files_stats = manager.get_files_stats()
+        blocks_stats = manager.get_blocks_stats()
+        
+        # Calcular estadísticas de almacenamiento
+        total_capacity = sum(dn.storage_capacity for dn in datanodes)
+        available_space = sum(dn.available_space for dn in datanodes)
         
         return {
-            "namenode_active": True,  # Si responde, está activo
+            "namenode_active": True,
             "total_files": files_stats.get("total_files", 0),
             "total_blocks": blocks_stats.get("total_blocks", 0),
-            "active_datanodes": len(datanodes),
-            "total_datanodes": total_datanodes,
-            "replication_factor": get_metadata_manager().replication_factor
+            "total_block_instances": blocks_stats.get("total_block_instances", 0),
+            "active_datanodes": len(active_datanodes),
+            "total_datanodes": len(datanodes),
+            "storage_capacity": total_capacity,
+            "available_space": available_space,
+            "replication_factor": blocks_stats.get("replication_factor", 2)
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        import traceback
+        error_detail = f"Error al obtener estadísticas del sistema: {str(e)}\n{traceback.format_exc()}"
+        print(error_detail)
+        raise HTTPException(status_code=500, detail=error_detail)

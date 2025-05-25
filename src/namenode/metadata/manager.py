@@ -4,7 +4,7 @@ import json
 import pickle
 import uuid
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from src.namenode.metadata.database import MetadataDatabase
@@ -17,13 +17,23 @@ from src.namenode.api.models import (
     FileType,
     DirectoryListing
 )
+from src.client.datanode_client import DataNodeClient
 
 class MetadataManager:
     def __init__(self, db_path: str = None, node_id: str = None):
+        """
+        Inicializa el gestor de metadatos.
+        
+        Args:
+            db_path: Ruta al archivo de base de datos (opcional)
+            node_id: ID único del nodo (opcional)
+        """
         self.db = MetadataDatabase(db_path)
         self.node_id = node_id or str(uuid.uuid4())
         self.known_nodes = set()  # Set of (node_id, hostname, port) tuples
+        self.logger = logging.getLogger("MetadataManager")
         self._ensure_root_directory_exists()
+        self._cleanup_stale_datanodes()
     
     def _ensure_root_directory_exists(self):
         """
@@ -48,31 +58,65 @@ class MetadataManager:
             logging.error(f"Error al crear el directorio raíz: {e}")
             raise
     
+    def _cleanup_stale_datanodes(self):
+        """
+        Limpia los DataNodes que quedaron registrados de sesiones anteriores.
+        """
+        try:
+            datanodes = self.list_datanodes()
+            for datanode in datanodes:
+                self.delete_datanode(datanode.node_id)
+            logging.info("Limpieza inicial de DataNodes completada")
+        except Exception as e:
+            logging.error(f"Error durante la limpieza inicial de DataNodes: {e}")
+    
     # Métodos para gestionar DataNodes
     
     def register_datanode(self, hostname: str, port: int, storage_capacity: int, available_space: int) -> DataNodeInfo:
-        node_id = self.db.register_datanode(hostname, port, storage_capacity, available_space)
-        return DataNodeInfo(
-            node_id=node_id,
-            hostname=hostname,
-            port=port,
-            status=DataNodeStatus.ACTIVE,
-            storage_capacity=storage_capacity,
-            available_space=available_space,
-            last_heartbeat=datetime.now(),
-            blocks_stored=0
-        )
+        """
+        Registra un nuevo DataNode en el sistema.
+        
+        Args:
+            hostname: Hostname del DataNode
+            port: Puerto del DataNode
+            storage_capacity: Capacidad total de almacenamiento
+            available_space: Espacio disponible actual
+            
+        Returns:
+            DataNodeInfo: Información del DataNode registrado
+        """
+        try:
+            node_id = self.db.register_datanode(hostname, port, storage_capacity, available_space)
+            # Asegurar que el DataNode se registre como activo
+            self.db.update_datanode_status(node_id, "active")
+            
+            return DataNodeInfo(
+                node_id=node_id,
+                hostname=hostname,
+                port=port,
+                status=DataNodeStatus.ACTIVE,
+                storage_capacity=storage_capacity,
+                available_space=available_space,
+                last_heartbeat=datetime.now(),
+                blocks_stored=0
+            )
+        except Exception as e:
+            self.logger.error(f"Error registering DataNode: {e}")
+            raise
     
     def get_datanode(self, node_id: str) -> Optional[DataNodeInfo]:
         datanode = self.db.get_datanode(node_id)
         if not datanode:
             return None
         
+        # Convertir el estado a minúsculas y asegurar que sea un valor válido del enum
+        status = DataNodeStatus.ACTIVE if datanode["status"].lower() == "active" else DataNodeStatus.INACTIVE
+        
         return DataNodeInfo(
             node_id=datanode["node_id"],
             hostname=datanode["hostname"],
             port=datanode["port"],
-            status=datanode["status"],
+            status=status,
             storage_capacity=datanode["storage_capacity"],
             available_space=datanode["available_space"],
             last_heartbeat=datanode["last_heartbeat"],
@@ -86,7 +130,7 @@ class MetadataManager:
                 node_id=dn["node_id"],
                 hostname=dn["hostname"],
                 port=dn["port"],
-                status=dn["status"],
+                status=DataNodeStatus.ACTIVE if dn["status"].lower() == "active" else DataNodeStatus.INACTIVE,
                 storage_capacity=dn["storage_capacity"],
                 available_space=dn["available_space"],
                 last_heartbeat=dn["last_heartbeat"],
@@ -96,7 +140,32 @@ class MetadataManager:
         ]
     
     def update_datanode_heartbeat(self, node_id: str, available_space: int) -> bool:
-        return self.db.update_datanode_heartbeat(node_id, available_space)
+        """
+        Actualiza el heartbeat de un DataNode y su estado.
+        
+        Args:
+            node_id: ID del DataNode
+            available_space: Espacio disponible actual
+            
+        Returns:
+            bool: True si la actualización fue exitosa
+        """
+        try:
+            # Primero actualizar el heartbeat y el espacio disponible
+            success = self.db.update_datanode_heartbeat(node_id, available_space)
+            
+            if success:
+                # Asegurarse de que el DataNode esté marcado como activo
+                self.db.update_datanode_status(node_id, "active")
+                self.logger.info(f"DataNode {node_id} heartbeat actualizado y marcado como activo")
+                return True
+            
+            self.logger.warning(f"No se pudo actualizar el heartbeat para DataNode {node_id}")
+            return False
+            
+        except Exception as e:
+            self.logger.error(f"Error actualizando heartbeat para DataNode {node_id}: {e}")
+            return False
     
     def update_datanode_status(self, node_id: str, status: str) -> bool:
         return self.db.update_datanode_status(node_id, status)
@@ -229,11 +298,32 @@ class MetadataManager:
         if file["type"] == FileType.DIRECTORY:
             return False  # No se puede eliminar un directorio con este método
         
-        # Eliminar todos los bloques asociados al archivo
+        # Obtener todos los bloques y sus ubicaciones antes de eliminarlos
         blocks = self.db.get_file_blocks(file_id)
-        for block in blocks:
-            self.db.delete_block(block["block_id"])
+        block_locations = {}
         
+        # Recopilar todas las ubicaciones de bloques
+        for block in blocks:
+            block_id = block["block_id"]
+            locations = self.db.get_block_locations(block_id)
+            block_locations[block_id] = locations
+            
+            # Eliminar el bloque de la base de datos
+            self.db.delete_block(block_id)
+            
+            # Eliminar las ubicaciones del bloque
+            for location in locations:
+                datanode = self.get_datanode(location["datanode_id"])
+                if datanode and datanode.status == DataNodeStatus.ACTIVE:
+                    try:
+                        # Crear cliente DataNode y eliminar el bloque
+                        with DataNodeClient(datanode.hostname, datanode.port) as datanode_client:
+                            datanode_client.delete_block(block_id)
+                    except Exception as e:
+                        self.logger.error(f"Error al eliminar bloque {block_id} del DataNode {datanode.node_id}: {e}")
+                        continue
+        
+        # Finalmente eliminar el archivo
         return self.db.delete_file(file_id)
     
     def delete_directory(self, directory_path: str, recursive: bool = False) -> bool:
@@ -304,20 +394,24 @@ class MetadataManager:
         if not block_data:
             return None
         
-        locations = [
-            BlockLocation(
-                block_id=block_id,
-                datanode_id=loc["datanode_id"],
-                is_leader=loc["is_leader"]
-            )
-            for loc in block_data["locations"]
-        ]
+        # Filtrar solo las ubicaciones en DataNodes activos
+        active_locations = []
+        for loc in block_data["locations"]:
+            datanode = self.get_datanode(loc["datanode_id"])
+            if datanode and datanode.status == DataNodeStatus.ACTIVE.value:
+                active_locations.append(
+                    BlockLocation(
+                        block_id=block_id,
+                        datanode_id=loc["datanode_id"],
+                        is_leader=loc["is_leader"]
+                    )
+                )
         
         return BlockInfo(
             block_id=block_data["block_id"],
             file_id=block_data["file_id"],
             size=block_data["size"],
-            locations=locations,
+            locations=active_locations,
             checksum=block_data["checksum"]
         )
     
@@ -552,11 +646,14 @@ class MetadataManager:
             Dict con estadísticas de archivos
         """
         try:
-            total_files = self.db.count_files()
-            total_size = self.db.get_total_files_size()
+            # Obtener solo archivos (no directorios)
+            files = [f for f in self.db.list_all_files() if f.get('type', '').lower() == 'file']
+            total_size = sum(f.get('size', 0) for f in files)
+            
+            self.logger.info(f"Contando archivos: encontrados {len(files)} archivos")
             
             return {
-                "total_files": total_files,
+                "total_files": len(files),
                 "total_size": total_size
             }
         except Exception as e:
@@ -574,23 +671,61 @@ class MetadataManager:
             Dict con estadísticas de bloques
         """
         try:
-            total_blocks = self.db.count_blocks()
-            total_size = self.db.get_total_blocks_size()
-            replicated_blocks = self.db.count_replicated_blocks()
+            # Obtener todos los bloques
+            blocks = self.db.get_all_blocks()
+            total_unique_blocks = len(blocks)
+            total_size = sum(block.get('size', 0) for block in blocks)
+            
+            # Contar total de bloques incluyendo réplicas
+            total_blocks_with_replicas = 0
+            replicated_blocks = 0
+            active_replicas = 0
+            
+            for block in blocks:
+                locations = self.db.get_block_locations(block['block_id'])
+                total_blocks_with_replicas += len(locations)
+                
+                # Contar ubicaciones en DataNodes activos separando líderes y seguidores
+                active_leaders = 0
+                active_followers = 0
+                
+                for loc in locations:
+                    try:
+                        datanode = self.get_datanode(loc["datanode_id"])
+                        if datanode and datanode["status"] == "active":
+                            if loc["is_leader"]:
+                                active_leaders += 1
+                            else:
+                                active_followers += 1
+                    except Exception:
+                        continue
+                
+                # Sumar las réplicas (seguidores) activas al total
+                active_replicas += active_followers
+                
+                if len(locations) > 1:
+                    replicated_blocks += 1
+            
+            self.logger.info(f"Estadísticas de bloques: {total_unique_blocks} bloques únicos, "
+                           f"{total_blocks_with_replicas} instancias totales, {active_replicas} réplicas activas")
             
             return {
-                "total_blocks": total_blocks,
+                "total_blocks": total_unique_blocks,
+                "total_block_instances": total_blocks_with_replicas,
+                "active_replicas": active_replicas,
                 "total_size": total_size,
                 "replicated_blocks": replicated_blocks,
-                "replication_factor": self.replication_factor
+                "replication_factor": getattr(self, 'replication_factor', 2)
             }
         except Exception as e:
             self.logger.error(f"Error al obtener estadísticas de bloques: {e}")
             return {
                 "total_blocks": 0,
+                "total_block_instances": 0,
+                "active_replicas": 0,
                 "total_size": 0,
                 "replicated_blocks": 0,
-                "replication_factor": self.replication_factor
+                "replication_factor": getattr(self, 'replication_factor', 2)
             }
 
     def get_file_info(self, path: str) -> Optional[Dict]:
@@ -613,6 +748,9 @@ class MetadataManager:
             blocks = self.get_file_blocks(file_data.file_id)
             block_info = []
             
+            # Primero obtenemos todos los DataNodes activos para tener un acceso más rápido
+            all_active_datanodes = {dn.node_id: dn for dn in self.list_datanodes(status="active")}
+            
             for block in blocks:
                 # Obtener ubicaciones del bloque
                 locations = self.db.get_block_locations(block.block_id)
@@ -620,18 +758,24 @@ class MetadataManager:
                 
                 for loc in locations:
                     try:
-                        # Verificar si el DataNode está activo
-                        datanode = self.get_datanode(loc["datanode_id"])
-                        if datanode and datanode["status"] == "active":
+                        datanode_id = loc["datanode_id"]
+                        # Verificar si el DataNode está activo usando el diccionario
+                        if datanode_id in all_active_datanodes:
+                            datanode = all_active_datanodes[datanode_id]
+                            # Incluir toda la información necesaria del DataNode
                             active_locations.append({
-                                "datanode_id": loc["datanode_id"],
+                                "datanode_id": datanode_id,
                                 "is_leader": loc["is_leader"],
-                                "hostname": datanode["hostname"],
-                                "port": datanode["port"]
+                                "hostname": datanode.hostname,
+                                "port": datanode.port,
+                                "status": "active"  # Ya sabemos que está activo
                             })
                     except Exception as e:
-                        print(f"Error al obtener información del DataNode {loc['datanode_id']}: {str(e)}")
+                        self.logger.error(f"Error al obtener información del DataNode {loc.get('datanode_id', 'unknown')}: {str(e)}")
                         continue
+                
+                if not active_locations:
+                    self.logger.warning(f"No hay DataNodes activos para el bloque {block.block_id}")
                 
                 block_info.append({
                     "block_id": block.block_id,
@@ -659,5 +803,48 @@ class MetadataManager:
         except Exception as e:
             import traceback
             error_detail = f"Error al obtener información del archivo {path}: {str(e)}\n{traceback.format_exc()}"
-            print(error_detail)
+            self.logger.error(error_detail)
             return None
+
+    def cleanup_inactive_datanodes(self) -> None:
+        """
+        Limpia los DataNodes que han estado inactivos por más de 5 minutos.
+        """
+        try:
+            current_time = datetime.now()
+            inactive_timeout = 300  # 5 minutos en segundos
+            
+            # Obtener todos los DataNodes
+            datanodes = self.list_datanodes()
+            
+            for datanode in datanodes:
+                if not isinstance(datanode, dict):
+                    # Si es un objeto DataNodeInfo, acceder a los atributos directamente
+                    node_id = datanode.node_id
+                    last_heartbeat = datanode.last_heartbeat
+                else:
+                    # Si es un diccionario, usar get()
+                    node_id = datanode.get('node_id')
+                    last_heartbeat = datanode.get('last_heartbeat')
+                
+                if not last_heartbeat:
+                    continue
+                
+                try:
+                    # Convertir el string de last_heartbeat a datetime si es necesario
+                    if isinstance(last_heartbeat, str):
+                        last_heartbeat = datetime.fromisoformat(last_heartbeat.replace('Z', '+00:00'))
+                    
+                    # Calcular tiempo transcurrido desde el último heartbeat
+                    time_diff = (current_time - last_heartbeat).total_seconds()
+                    
+                    # Si han pasado más de 5 minutos, eliminar el DataNode
+                    if time_diff > inactive_timeout:
+                        self.logger.info(f"Eliminando DataNode inactivo: {node_id}")
+                        self.delete_datanode(node_id)
+                except Exception as e:
+                    self.logger.error(f"Error procesando DataNode {node_id}: {e}")
+                    continue
+        
+        except Exception as e:
+            self.logger.error(f"Error durante la limpieza de DataNodes: {e}")

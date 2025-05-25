@@ -44,7 +44,68 @@ class NameNodeClient:
     
     # Operaciones de bloques
     def get_block_info(self, block_id: str) -> Dict:
-        return self._make_request('get', f'/blocks/{block_id}')
+        """
+        Obtiene información detallada de un bloque, incluyendo sus ubicaciones.
+        
+        Args:
+            block_id: ID del bloque
+            
+        Returns:
+            Diccionario con información detallada del bloque o un diccionario vacío si hay error
+        """
+        try:
+            response = self._make_request('get', f'/blocks/{block_id}')
+            
+            # Asegurarse de que la respuesta contiene información de ubicaciones completa
+            if 'locations' in response:
+                # Verificar que cada ubicación tiene información completa del DataNode
+                for i, location in enumerate(response['locations']):
+                    if not all(k in location for k in ['hostname', 'port']):
+                        # Si falta información, intentar obtener el DataNode completo
+                        try:
+                            datanode_id = location.get('datanode_id')
+                            if datanode_id:
+                                datanode_info = self.get_datanode(datanode_id)
+                                if datanode_info:
+                                    # Actualizar información en la ubicación
+                                    response['locations'][i].update({
+                                        'hostname': datanode_info.get('hostname'),
+                                        'port': datanode_info.get('port'),
+                                        'status': datanode_info.get('status')
+                                    })
+                        except Exception:
+                            # Si no se puede obtener la información completa, continuar con la siguiente ubicación
+                            continue
+            
+            return response
+        except Exception as e:
+            print(f"Error al obtener información del bloque {block_id}: {e}")
+            return {}
+    
+    def add_block_location(self, block_id: str, datanode_id: str, is_leader: bool = False) -> Dict:
+        """
+        Registra la ubicación de un bloque en un DataNode específico.
+        
+        Args:
+            block_id: ID del bloque
+            datanode_id: ID del DataNode donde se almacena el bloque
+            is_leader: Indica si este DataNode es el líder para este bloque
+            
+        Returns:
+            Información del bloque actualizada
+        """
+        location = {
+            'block_id': block_id,
+            'datanode_id': datanode_id,
+            'is_leader': is_leader
+        }
+        try:
+            return self._make_request('post', f'/blocks/{block_id}/locations', data=location)
+        except Exception as e:
+            # Si el error es 404 (bloque no encontrado), intentamos crear el bloque primero
+            if "404" in str(e) and "Block not found" in str(e):
+                print(f"El bloque {block_id} no existe en el NameNode. Intente registrar el bloque primero.")
+            raise e
     
     def get_file_blocks(self, path: str) -> List[Dict]:
         """
@@ -57,12 +118,34 @@ class NameNodeClient:
             Lista de diccionarios con información de los bloques
         """
         try:
+            # Primero obtener la información del archivo para verificar que existe
+            file_info = self.get_file_info(path)
+            if not file_info:
+                return []
+            
+            # Obtener los bloques y sus ubicaciones
             response = self._make_request('get', f'/files/blocks/{path}')
             if isinstance(response, dict) and 'blocks' in response:
-                return response['blocks']
+                blocks = response['blocks']
             elif isinstance(response, list):
-                return response
-            return []
+                blocks = response
+            else:
+                blocks = []
+            
+            # Para cada bloque, obtener información detallada
+            detailed_blocks = []
+            for block in blocks:
+                block_id = block.get('block_id')
+                if block_id:
+                    try:
+                        block_info = self.get_block_info(block_id)
+                        if block_info:
+                            detailed_blocks.append(block_info)
+                    except Exception as e:
+                        print(f"Error al obtener información del bloque {block_id}: {e}")
+                        continue
+            
+            return detailed_blocks
         except Exception as e:
             print(f"Error al obtener información de los bloques: {e}")
             return []
@@ -124,8 +207,14 @@ class NameNodeClient:
             Diccionario con la información del archivo o None si no existe
         """
         try:
+            # Obtener información detallada, incluyendo ubicaciones de bloques en DataNodes activos
             response = self._make_request('get', f'/files/info/{path}')
             if isinstance(response, dict):
+                # Verificar si hay bloques sin ubicaciones disponibles
+                if 'blocks' in response:
+                    for block in response['blocks']:
+                        if 'locations' in block and len(block['locations']) == 0:
+                            print(f"Advertencia: El bloque {block['block_id']} no tiene ubicaciones disponibles")
                 return response
             return None
         except Exception as e:
@@ -141,7 +230,7 @@ class NameNodeClient:
         """
         try:
             response = self._make_request('get', '/system/stats')
-            return response.json() if response else {
+            return response if response else {
                 'namenode_active': False,
                 'total_files': 0,
                 'total_blocks': 0,

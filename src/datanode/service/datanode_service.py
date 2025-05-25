@@ -220,7 +220,12 @@ class DataNodeServicer(datanode_pb2_grpc.DataNodeServiceServicer):
             
             # Establecer conexión con el DataNode objetivo
             try:
-                channel = grpc.insecure_channel(f"{target_hostname}:{target_port}")
+                # Configurar opciones del canal con límites más grandes
+                options = [
+                    ('grpc.max_send_message_length', 8 * 1024 * 1024),  # 8MB
+                    ('grpc.max_receive_message_length', 8 * 1024 * 1024)  # 8MB
+                ]
+                channel = grpc.insecure_channel(f"{target_hostname}:{target_port}", options=options)
                 stub = datanode_pb2_grpc.DataNodeServiceStub(channel)
                 
                 # Enviar el bloque al DataNode objetivo
@@ -318,7 +323,12 @@ class DataNodeServicer(datanode_pb2_grpc.DataNodeServiceServicer):
             try:
                 # Establecer conexión con el DataNode destino
                 self.logger.info(f"Conectando con DataNode destino {target_hostname}:{target_port}")
-                target_channel = grpc.insecure_channel(f"{target_hostname}:{target_port}")
+                # Configurar opciones del canal con límites más grandes
+                options = [
+                    ('grpc.max_send_message_length', 8 * 1024 * 1024),  # 8MB
+                    ('grpc.max_receive_message_length', 8 * 1024 * 1024)  # 8MB
+                ]
+                target_channel = grpc.insecure_channel(f"{target_hostname}:{target_port}", options=options)
                 target_stub = datanode_pb2_grpc.DataNodeServiceStub(target_channel)
                 
                 # Preparar datos para envío
@@ -475,7 +485,12 @@ class DataNodeServicer(datanode_pb2_grpc.DataNodeServiceServicer):
 
 
 def serve(node_id: str, hostname: str, port: int, storage_dir: str, namenode_url: str = None):
-    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+    # Configurar opciones del servidor gRPC con límites más grandes
+    options = [
+        ('grpc.max_send_message_length', 8 * 1024 * 1024),  # 8MB
+        ('grpc.max_receive_message_length', 8 * 1024 * 1024)  # 8MB
+    ]
+    server = grpc.server(futures.ThreadPoolExecutor(max_workers=10), options=options)
     
     # Configurar logging
     logging.basicConfig(

@@ -1,5 +1,10 @@
 # Sistema de Archivos Distribuidos por Bloques
 
+### Integrantes:
+- Alejandro Gómez Quiñones
+- Joaquin Castaño Trujillo
+- Sebastián Soto Ángel
+
 Este proyecto implementa un sistema de archivos distribuidos por bloques minimalista que permite almacenar, recuperar y gestionar archivos distribuidos en múltiples nodos, garantizando replicación y alta disponibilidad.
 
 ## Estructura del Proyecto
